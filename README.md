@@ -31,9 +31,27 @@ python3 -m notesgen generate --course "<course path>"
 # Assemble .docx from the Markdown
 python3 -m notesgen build --course "<course path>"
 
-# Both
+# Write .html / .txt / .md for copy-pasting (no model calls)
+python3 -m notesgen export --course "<course path>"
+
+# Everything: generate, then build .docx and export every format
 python3 -m notesgen run --course "<course path>"
 ```
+
+## Choosing an output format
+
+`generate` is the only command that costs anything. Every format below is
+local string formatting — producing all three for a 183-lecture course takes
+under a second and costs **nothing**. Format has no bearing on token usage.
+
+| You want to | Use | How |
+|---|---|---|
+| Paste into Word / Google Docs **with formatting** | `html/` | Open in browser, Cmd+A, Cmd+C, paste |
+| Paste anywhere at all — email, Notes, a ticket, another AI | `txt/` | Open, copy |
+| Notion, Obsidian, GitHub | `export-md/` | One file per section |
+| Upload files to Google Drive | `docx/` | Drag in, open with Google Docs |
+
+`00 - Complete Course.*` in each folder holds every section in one file.
 
 Useful flags:
 
@@ -45,6 +63,9 @@ Useful flags:
 | `--model sonnet` | model passed to `claude -p` |
 | `--force` | regenerate even if already current |
 | `--glossary path.yml` | course-specific term corrections |
+| `--format html` | export only that format (repeatable) |
+| `--no-whole-course` | skip the combined all-sections file |
+| `--no-docx` | on `run`, skip the .docx step |
 | `--max-words 25000` | split oversized sections into Part 1/2/... |
 
 ## Output
@@ -53,12 +74,15 @@ Useful flags:
 output/<course>/
     md/                     one .md per lecture, plus _section-overview.md
     docx/                   one .docx per section, plus 00 - Course Index.docx
+    html/                   per section + whole course, for pasting
+    txt/                    per section + whole course, plain text
+    export-md/              per section + whole course, concatenated Markdown
     manifest.json           what has been generated, for resume
 ```
 
-Upload: drag the `docx/` contents into drive.google.com, then open each with
-Google Docs. Headings map to Word heading styles, so **View → Show outline**
-gives you a working navigation pane. See `docx/UPLOAD.md`.
+Each export folder carries a `PASTE.md` describing its workflow, and `docx/`
+carries `UPLOAD.md`. Headings map to real heading styles in both `.docx` and
+`.html`, so Google Docs' **View → Show outline** pane works either way.
 
 ## What the output looks like
 
@@ -102,6 +126,20 @@ skips anything unchanged, so a run interrupted by a usage limit picks up where
 it stopped — just run the same command again. `--force` overrides.
 
 Failures are per-lecture and never abort the run; re-run to retry only those.
+
+## Architecture
+
+One Markdown parser, four renderers. `mdparse.py` turns the generated notes
+into typed blocks and inline spans; `assemble.py` decides what goes into each
+document and how oversized sections split. The `.docx`, HTML and plain-text
+renderers all consume those, so a fix to tables or emphasis lands in every
+format at once rather than in one of three copies.
+
+`python3 tests_mdparse.py` covers the parser. The emphasis cases there matter
+more than they look: these notes cover a Python course, so `**kwargs`, `x**2`
+and `{**d1, **d2}` appear constantly in prose, and a loose bold regex silently
+eats them. Markdown's own rule — emphasis markers may not sit beside a space —
+is what protects them.
 
 ## Requirements
 

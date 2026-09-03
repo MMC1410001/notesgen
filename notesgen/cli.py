@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from . import build as build_mod
+from . import export as export_mod
 from . import generate as gen
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
 from .glossary import Glossary
@@ -118,11 +119,34 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    course_dir, name, root, md_root, _, _ = _paths(args)
+    if not md_root.exists():
+        print(f"no generated notes at {md_root}; run `generate` first", file=sys.stderr)
+        return 1
+    sections = _select(discover(course_dir), args.section, args.only)
+    formats = tuple(args.format) if args.format else export_mod.FORMATS
+
+    written = export_mod.export(
+        name, sections, md_root, root,
+        formats=formats,
+        max_words=args.max_words,
+        whole_course=not args.no_whole_course,
+    )
+    print()
+    for fmt, paths in written.items():
+        print(f"  {len(paths):>3} {fmt:<5} -> {root / export_mod.SUBDIR[fmt]}")
+    print(f"\n  These cost nothing to regenerate - only `generate` spends tokens.")
+    return 0
+
+
 def cmd_run(args) -> int:
     rc = cmd_generate(args)
     if rc and not args.keep_going:
         return rc
-    return cmd_build(args)
+    if not args.no_docx:
+        rc = cmd_build(args) or rc
+    return cmd_export(args) or rc
 
 
 def main(argv=None) -> int:
@@ -132,7 +156,7 @@ def main(argv=None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def common(p, *, generating=False, building=False):
+    def common(p, *, generating=False, building=False, exporting=False):
         p.add_argument("--course", required=True, help="path to the course transcript folder")
         p.add_argument("--output", default=str(DEFAULT_OUTPUT))
         p.add_argument("--section", action="append", help="limit to section number(s), repeatable")
@@ -145,6 +169,13 @@ def main(argv=None) -> int:
             p.add_argument("--no-rollup", action="store_true")
         if building:
             p.add_argument("--max-words", type=int, default=build_mod.MAX_WORDS_PER_DOC)
+        if exporting:
+            p.add_argument(
+                "--format", action="append", choices=list(export_mod.FORMATS),
+                help="repeatable; default is all three",
+            )
+            p.add_argument("--no-whole-course", action="store_true",
+                           help="skip the single combined all-sections file")
 
     p = sub.add_parser("discover", help="list the course tree and flag missing transcripts")
     common(p)
@@ -158,9 +189,14 @@ def main(argv=None) -> int:
     common(p, building=True)
     p.set_defaults(func=cmd_build)
 
-    p = sub.add_parser("run", help="generate then build")
-    common(p, generating=True, building=True)
+    p = sub.add_parser("export", help="write notes as .html, .txt and .md (no model calls)")
+    common(p, building=True, exporting=True)
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("run", help="generate, then build and export every format")
+    common(p, generating=True, building=True, exporting=True)
     p.add_argument("--keep-going", action="store_true", help="build even if some lectures failed")
+    p.add_argument("--no-docx", action="store_true", help="skip the .docx step")
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
