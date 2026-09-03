@@ -1,0 +1,13 @@
+# Generated notes. These are derived from paid Udemy course content and must
+# not be published — see README. Keep them local.
+output/
+
+# Run logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
