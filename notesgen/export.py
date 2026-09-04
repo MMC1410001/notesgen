@@ -6,7 +6,9 @@ bearing on token usage; only `generate` spends anything.
 
 from __future__ import annotations
 
+import base64
 import html as _html
+import re
 from pathlib import Path
 
 from .assemble import MAX_WORDS_PER_DOC, Doc, collect
@@ -19,8 +21,9 @@ EXT = {"html": ".html", "txt": ".txt", "md": ".md"}
 SUBDIR = {"html": "html", "txt": "txt", "md": "export-md"}
 
 CSS = """\
-body{max-width:52em;margin:2.5em auto;padding:0 1.5em;
+body{margin:0;padding:0;
      font:16px/1.65 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a}
+main{max-width:52em;padding:2.5em 1.5em}
 h1{font-size:1.9em;margin:1.6em 0 .4em;padding-bottom:.2em;border-bottom:2px solid #d8dde3}
 h2{font-size:1.4em;margin:1.5em 0 .4em;color:#12263f}
 h3{font-size:1.15em;margin:1.3em 0 .3em;color:#33475b}
@@ -37,6 +40,27 @@ table{border-collapse:collapse;margin:.9em 0;font-size:.95em}
 th,td{border:1px solid #d8dde3;padding:.4em .7em;text-align:left;vertical-align:top}
 th{background:#f2f3f5;font-weight:600}
 pre.mermaid{background:#fff;border:1px solid #e2e5e9;text-align:center;padding:1.2em}
+figure.diagram{margin:1.2em 0;text-align:center}
+figure.diagram img{max-width:100%;border:1px solid #e2e5e9;border-radius:6px;background:#fff}
+
+/* Navigation rail. Collapses above the content on narrow screens so the page
+   still reads on a phone and inside Drive's preview pane. */
+#toc{position:fixed;top:0;left:0;bottom:0;width:17em;overflow-y:auto;
+     padding:1.5em 1em;background:#f7f8fa;border-right:1px solid #e2e5e9;font-size:.87em}
+#toc .toc-title{font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+     font-size:.8em;color:#667085;margin-bottom:.8em}
+#toc ul{list-style:none;margin:0;padding:0}
+#toc li{margin:.15em 0}
+#toc a{color:#33475b;text-decoration:none;display:block;padding:.2em .4em;border-radius:4px}
+#toc a:hover{background:#e8ebef;color:#12263f}
+#toc li.l1>a{font-weight:600;margin-top:.7em;color:#12263f}
+#toc li.l2>a{padding-left:1.2em;color:#55637a}
+main{margin-left:19em}
+@media (max-width:900px){
+  #toc{position:static;width:auto;height:auto;border-right:0;
+       border-bottom:1px solid #e2e5e9;margin-bottom:1.5em}
+  main{margin-left:0}
+}
 blockquote{margin:.9em 0;padding:.7em 1em;background:#fff8e5;
            border-left:4px solid #e0a800;color:#6a4b00}
 blockquote p{margin:.2em 0}
@@ -109,7 +133,35 @@ def _inline_html(text: str) -> str:
     return "".join(out)
 
 
-def _blocks_html(markdown: str, level_map) -> str:
+def _diagram_png(source: str, image_cache) -> str | None:
+    """Return a data: URI for a rendered diagram, or None.
+
+    Inlining the image keeps the page self-contained - no CDN, no JavaScript -
+    which is what makes it render in Google Drive's preview and in any offline
+    viewer.
+    """
+    if image_cache is None:
+        return None
+    from .diagrams import render_png
+
+    path = render_png(source, Path(image_cache))
+    if path is None:
+        return None
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{data}"
+
+
+def _slugify(text: str, used: set[str]) -> str:
+    base = re.sub(r"[^\w\s-]", "", text.lower()).strip()
+    base = re.sub(r"\s+", "-", base) or "section"
+    slug, n = base, 2
+    while slug in used:
+        slug, n = f"{base}-{n}", n + 1
+    used.add(slug)
+    return slug
+
+
+def _blocks_html(markdown: str, level_map, image_cache=None, toc=None, used=None) -> str:
     out: list[str] = []
     open_list: str | None = None
 
@@ -132,7 +184,13 @@ def _blocks_html(markdown: str, level_map) -> str:
 
         close_list()
         if b.kind == "mermaid":
-            out.append(f'<pre class="mermaid">{_html.escape(b.source)}</pre>')
+            png = _diagram_png(b.source, image_cache)
+            if png:
+                out.append(
+                    f'<figure class="diagram"><img alt="diagram" src="{png}"></figure>'
+                )
+            else:
+                out.append(f'<pre class="mermaid">{_html.escape(b.source)}</pre>')
         elif b.kind == "table":
             head, *body = b.rows or [[]]
             cells = "".join(f"<th>{_inline_html(c)}</th>" for c in head)
@@ -143,7 +201,12 @@ def _blocks_html(markdown: str, level_map) -> str:
             out.append(f"<table><thead><tr>{cells}</tr></thead><tbody>{rows}</tbody></table>")
         elif b.kind == "heading":
             lvl = min(b.level, 4)
-            out.append(f"<h{lvl}>{_inline_html(b.text)}</h{lvl}>")
+            if toc is not None and lvl <= 2:
+                slug = _slugify(b.text, used if used is not None else set())
+                toc.append((lvl, b.text, slug))
+                out.append(f'<h{lvl} id="{slug}">{_inline_html(b.text)}</h{lvl}>')
+            else:
+                out.append(f"<h{lvl}>{_inline_html(b.text)}</h{lvl}>")
         elif b.kind == "code":
             body = _html.escape("\n".join(b.lines or []))
             out.append(f"<pre><code>{body}</code></pre>")
@@ -156,21 +219,36 @@ def _blocks_html(markdown: str, level_map) -> str:
     return "\n".join(out)
 
 
-def render_html(doc: Doc) -> str:
+def render_html(doc: Doc, image_cache=None) -> str:
     from .mdparse import normalise_heading_levels
 
     level_map = normalise_heading_levels(doc.markdown.splitlines())
+    toc: list[tuple[int, str, str]] = []
+    used: set[str] = set()
     body = "\n".join(
-        f'<div class="doc">{_blocks_html(part, level_map)}</div>' for part in doc.parts
+        f'<div class="doc">{_blocks_html(part, level_map, image_cache, toc, used)}</div>'
+        for part in doc.parts
     )
-    # Only pull in mermaid.js when the document actually has a diagram, so
-    # pages without one stay offline-usable.
+
+    nav = ""
+    if len(toc) > 1:
+        items = "".join(
+            f'<li class="l{lvl}"><a href="#{slug}">{_html.escape(text)}</a></li>'
+            for lvl, text, slug in toc
+        )
+        nav = f'<nav id="toc"><div class="toc-title">Contents</div><ul>{items}</ul></nav>'
+
+    # mermaid.js is only pulled in when a diagram could not be pre-rendered.
+    # With images inlined the page is fully self-contained, which is what lets
+    # it display in Google Drive and offline.
     script = MERMAID_SCRIPT if 'class="mermaid"' in body else ""
+
     return (
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n"
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
         f"<title>{_html.escape(doc.title)}</title>\n<style>\n{CSS}</style>\n"
-        f"</head><body>\n<h1>{_html.escape(doc.title)}</h1>\n"
-        f'<p class="subtitle">{_html.escape(doc.subtitle)}</p>\n{body}\n'
+        f"</head><body>\n{nav}\n<main>\n<h1>{_html.escape(doc.title)}</h1>\n"
+        f'<p class="subtitle">{_html.escape(doc.subtitle)}</p>\n{body}\n</main>\n'
         f"{script}</body></html>\n"
     )
 
@@ -260,6 +338,7 @@ def export(
     formats=FORMATS,
     max_words: int = MAX_WORDS_PER_DOC,
     whole_course: bool = True,
+    image_cache: Path | None = None,
 ) -> dict[str, list[Path]]:
     docs = collect(
         course, sections, md_root, max_words=max_words, whole_course=whole_course
@@ -272,7 +351,10 @@ def export(
         paths: list[Path] = []
         for doc in docs:
             path = target / (doc.basename + EXT[fmt])
-            path.write_text(RENDERERS[fmt](doc), encoding="utf-8")
+            content = (
+                render_html(doc, image_cache) if fmt == "html" else RENDERERS[fmt](doc)
+            )
+            path.write_text(content, encoding="utf-8")
             paths.append(path)
         (target / "PASTE.md").write_text(PASTE_NOTE[fmt], encoding="utf-8")
         written[fmt] = paths

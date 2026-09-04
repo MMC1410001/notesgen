@@ -25,7 +25,7 @@ A real run: a 26-section, 183-lecture course became 202,000 words of notes and
 
 1. [Before you start](#1-before-you-start)
 2. [Install](#2-install)
-3. [Configure once (optional)](#2b-configure-once-optional)
+3. [Configure once, then one command](#2b-configure-once-then-one-command)
 4. [Get the transcripts](#3-get-the-transcripts)
 5. [Choose who writes the notes](#4-choose-who-writes-the-notes)
 6. [Generate the notes](#5-generate-the-notes)
@@ -89,9 +89,9 @@ python3 -m notesgen --help
 
 ---
 
-## 2b. Configure once (optional)
+## 2b. Configure once, then one command
 
-Every option can be set in a `.env` file so you stop repeating flags:
+Set up `.env` once and the whole thing is a single command:
 
 ```bash
 cp .env.example .env
@@ -104,17 +104,58 @@ NOTESGEN_INPUT=https://www.udemy.com/course/YOUR-COURSE-SLUG/
 # which model writes the notes
 NOTESGEN_PROVIDER=gemini
 GEMINI_API_KEY=your-key-here
-```
 
-Then commands need no arguments at all:
+# what you want out of it
+NOTESGEN_OUTPUTS=all
+```
 
 ```bash
 python3 -m notesgen run
 ```
 
+That fetches the transcripts, writes the notes, draws the diagrams, builds
+every format you asked for and publishes to Drive. Nothing else to type.
+
+### Pick what you get
+
+Not everyone wants all of it. Set `NOTESGEN_OUTPUTS`, or pass `--outputs`:
+
+| You want | Set |
+|---|---|
+| Everything | `all` |
+| Only a Google Doc in Drive | `gdoc` |
+| Only the shareable web page on Drive | `drive-html` |
+| Both Drive formats | `gdoc,drive-html` |
+| Only a local web page | `html` |
+| Only Markdown | `md` |
+| Only plain text | `txt` |
+| Only Word files | `docx` |
+| Everything local, nothing uploaded | leave unset |
+
+```bash
+python3 -m notesgen run --outputs gdoc          # just a Google Doc
+python3 -m notesgen run --outputs html,md       # just web page and Markdown
+python3 -m notesgen run --outputs all           # the lot
+```
+
+`run` prints what it is about to make before it starts, and dependencies are
+added for you — asking for `gdoc` builds the `.docx` it needs first.
+
+| Output | What it is |
+|---|---|
+| `notes` | the Markdown notes — always produced, everything builds on it |
+| `diagrams` | system and flow diagrams per section |
+| `html` | self-contained web page with a navigation sidebar |
+| `txt` | plain text |
+| `md` | one Markdown file per section |
+| `docx` | Word documents |
+| `gdoc` | a Google Doc in your Drive |
+| `drive-html` | the web page on Drive, shareable by link |
+
 | Variable | Sets |
 |---|---|
 | `NOTESGEN_INPUT` | default for `-i` — URL, zip, or folder |
+| `NOTESGEN_OUTPUTS` | what to produce (see the table above) |
 | `NOTESGEN_PROVIDER` | `claude-cli` / `anthropic` / `openai` / `gemini` |
 | `NOTESGEN_MODEL` | override the model |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | API keys |
@@ -445,6 +486,25 @@ It is also printed at the end of `discover` and `run`, and written to
 Re-running updates the same document instead of making duplicates, so any link
 you have shared keeps working. Add `--split-sections` for one document per
 section instead of one big one.
+
+### The web page on Drive
+
+```bash
+python3 -m notesgen run --outputs drive-html
+```
+
+This uploads the exported web page to Drive and gives you a link anyone can
+open. It is often the nicer thing to share: a navigation sidebar down the left
+listing every section and lecture, diagrams as images, and code blocks that
+keep their formatting.
+
+The page is deliberately **self-contained** — diagrams are embedded in the file
+rather than drawn by JavaScript, and nothing is loaded from the internet.
+That is what makes it display inside Drive, and it means the file still works
+if you download it, email it, or open it offline years from now.
+
+You can have both: `--outputs gdoc,drive-html` gives you an editable Google Doc
+*and* a shareable page, and `notesgen links` lists both.
 
 ---
 

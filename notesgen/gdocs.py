@@ -29,6 +29,7 @@ UPLOAD_TIMEOUT = 600
 UPLOAD_RETRIES = 5
 GDOC_MIME = "application/vnd.google-apps.document"
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+HTML_MIME = "text/html"
 
 CREDENTIALS_HELP = """\
 Google Docs upload needs a one-time OAuth client:
@@ -110,6 +111,60 @@ def _folder(service, name: str) -> str:
     return created["id"]
 
 
+def push_file(
+    path: Path,
+    title: str,
+    config_dir: Path,
+    manifest,
+    *,
+    mime: str,
+    convert: bool,
+    folder_name: str | None = None,
+    key: str | None = None,
+) -> str:
+    """Upload any file to Drive, optionally converting it to a Google Doc.
+
+    `convert=False` keeps the file as-is, which is what the HTML page wants:
+    the exported page embeds its diagrams and needs no JavaScript, so Drive
+    renders it in preview and the link is shareable as it stands.
+    """
+    service = _service(config_dir)
+    from googleapiclient.http import MediaFileUpload
+
+    key = key or f"__gdoc__/{title}"
+    existing = manifest.entries.get(key, {}).get("doc_id")
+    media = MediaFileUpload(str(path), mimetype=mime, resumable=False)
+
+    if existing:
+        try:
+            service.files().get(fileId=existing, fields="id").execute()
+            service.files().update(
+                fileId=existing, media_body=media
+            ).execute(num_retries=UPLOAD_RETRIES)
+            url = _url(existing, convert)
+            manifest.record(key, hash="", output=str(path), doc_id=existing,
+                            status="ok", url=url)
+            return url
+        except Exception:  # noqa: BLE001 - deleted upstream; recreate below
+            pass
+
+    body: dict = {"name": title}
+    if convert:
+        body["mimeType"] = GDOC_MIME
+    if folder_name:
+        body["parents"] = [_folder(service, folder_name)]
+
+    created = service.files().create(
+        body=body, media_body=media, fields="id"
+    ).execute(num_retries=UPLOAD_RETRIES)
+    doc_id = created["id"]
+
+    url = _url(doc_id, convert)
+    manifest.record(key, hash="", output=str(path), doc_id=doc_id,
+                    status="ok", url=url)
+    return url
+
+
 def push(
     docx_path: Path,
     title: str,
@@ -139,8 +194,8 @@ def push(
                 fileId=existing, media_body=media
             ).execute(num_retries=UPLOAD_RETRIES)
             manifest.record(key, hash="", output=str(docx_path), doc_id=existing,
-                            status="ok", url=_url(existing))
-            return _url(existing)
+                            status="ok", url=_url(existing, True))
+            return _url(existing, True)
         except Exception:  # noqa: BLE001 - the doc was deleted; fall through and recreate
             pass
 
@@ -153,9 +208,12 @@ def push(
     ).execute(num_retries=UPLOAD_RETRIES)
     doc_id = created["id"]
     manifest.record(key, hash="", output=str(docx_path), doc_id=doc_id,
-                    status="ok", url=_url(doc_id))
+                    status="ok", url=_url(doc_id, True))
     return _url(doc_id)
 
 
-def _url(doc_id: str) -> str:
-    return f"https://docs.google.com/document/d/{doc_id}/edit"
+def _url(doc_id: str, convert: bool = True) -> str:
+    if convert:
+        return f"https://docs.google.com/document/d/{doc_id}/edit"
+    # A non-converted file has no Docs editor; this is its Drive preview.
+    return f"https://drive.google.com/file/d/{doc_id}/view"

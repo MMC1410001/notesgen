@@ -22,6 +22,7 @@ from . import gdocs
 from . import generate as gen
 from . import ingest
 from . import links as links_mod
+from . import outputs as outputs_mod
 from .providers import base as providers_base
 from . import setup_cmd
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
@@ -240,6 +241,7 @@ def cmd_export(args) -> int:
         formats=formats,
         max_words=args.max_words,
         whole_course=not args.no_whole_course,
+        image_cache=None if getattr(args, "no_images", False) else root / "diagram-images",
     )
     print()
     for fmt, paths in written.items():
@@ -259,7 +261,33 @@ def cmd_push(args) -> int:
     config_dir.mkdir(parents=True, exist_ok=True)
     image_cache = None if args.no_images else root / "diagram-images"
 
+    publish = getattr(args, "publish", None) or ["gdoc"]
+
     try:
+        if "drive-html" in publish:
+            html_dir = root / "html"
+            page = html_dir / "00 - Complete Course.html"
+            if not page.exists():
+                pages = sorted(html_dir.glob("*.html")) if html_dir.is_dir() else []
+                page = pages[0] if pages else None
+            if page is None:
+                print("  no HTML to upload; run `export` first", file=sys.stderr)
+            else:
+                print(f"\n  Uploading {page.name} ({page.stat().st_size // 1024} KB)...")
+                url = gdocs.push_file(
+                    page, f"{name} (web page)", config_dir, manifest,
+                    mime=gdocs.HTML_MIME, convert=False,
+                    folder_name=name, key=f"__gdoc__/{name} (web page)",
+                )
+                print(f"  {url}")
+
+        if "gdoc" not in publish:
+            found = links_mod.collect(manifest)
+            written = links_mod.write_file(root, name, found)
+            if written:
+                print(f"\n  Saved these links to {written}")
+            return 0
+
         if args.split_sections:
             print(f"\nPushing {len(sections)} section documents to Google Docs")
             urls = []
@@ -295,29 +323,56 @@ def cmd_push(args) -> int:
 
 
 def cmd_run(args) -> int:
+    """One command: fetch if needed, generate, and produce what was asked for."""
+    try:
+        wanted = outputs_mod.parse(args.outputs)
+    except outputs_mod.OutputError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+
+    print("\nWill produce:")
+    print(outputs_mod.describe(wanted))
+
     rc = cmd_generate(args)
     if rc and not args.keep_going:
         return rc
-    if not args.no_diagrams:
+
+    if "diagrams" in wanted:
         rc = cmd_diagram(args) or rc
-    if not args.no_docx:
+
+    if "docx" in wanted:
         rc = cmd_build(args) or rc
-    rc = cmd_export(args) or rc
+
+    export_formats = [f for f in ("html", "txt", "md") if f in wanted]
+    if export_formats:
+        args.format = export_formats
+        rc = cmd_export(args) or rc
+
+    if "gdoc" in wanted or "drive-html" in wanted:
+        args.publish = [o for o in ("gdoc", "drive-html") if o in wanted]
+        rc = cmd_push(args) or rc
 
     _course_dir, name, root, _md, _docx, manifest_path = _paths(args)
     print("\n" + "=" * 60)
     print(f"  {name}")
     print("=" * 60)
-    print(f"  Everything is under {root}")
-    print("    html/        open in a browser, then copy into Word")
-    print("    docx/        drag into Google Drive")
-    print("    txt/         paste anywhere")
+    print(f"  Files: {root}")
+    for folder, blurb in (
+        ("html", "open in a browser; also copies into Word with formatting"),
+        ("docx", "Word documents"),
+        ("txt", "plain text, pastes anywhere"),
+        ("export-md", "Markdown per section"),
+    ):
+        if (root / folder).is_dir():
+            print(f"    {folder + '/':<12} {blurb}")
     if manifest_path.exists():
         found = links_mod.collect(Manifest(manifest_path))
         if found:
             links_mod.show(found)
+        elif "gdoc" in wanted:
+            print("\n  Google Docs publish did not complete - see above.")
         else:
-            print("\n  Publish to Google Docs with:  python3 -m notesgen push")
+            print("\n  Publish to Google Drive with:  python3 -m notesgen run --outputs gdoc")
     return rc
 
 
@@ -420,8 +475,13 @@ def main(argv=None) -> int:
     common(p, building=True, exporting=True)
     p.set_defaults(func=cmd_export)
 
-    p = sub.add_parser("push", help="upload the notes to Google Docs")
+    p = sub.add_parser("push", help="upload the notes to Google Drive")
     common(p, building=True)
+    p.add_argument(
+        "--publish", action="append", choices=["gdoc", "drive-html"],
+        help="gdoc = a Google Doc (default); drive-html = the web page, "
+             "shareable by link. Repeatable.",
+    )
     p.add_argument("--split-sections", action="store_true",
                    help="one Doc per section instead of one for the whole course")
     p.add_argument("--config-dir", default=str(PROJECT_ROOT / ".gdocs"),
@@ -431,8 +491,16 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="generate, then build and export every format")
     common(p, generating=True, building=True, exporting=True)
     p.add_argument("--keep-going", action="store_true", help="build even if some lectures failed")
-    p.add_argument("--no-docx", action="store_true", help="skip the .docx step")
-    p.add_argument("--no-diagrams", action="store_true", help="skip diagram generation")
+    p.add_argument("--no-docx", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--no-diagrams", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument(
+        "--outputs", action="append",
+        default=[os.environ.get("NOTESGEN_OUTPUTS")] if os.environ.get("NOTESGEN_OUTPUTS") else None,
+        help="what to produce, comma-separated: "
+             + ", ".join(outputs_mod.ALL)
+             + ". Shortcuts: all, drive, web, word, markdown, text. "
+               "Defaults to $NOTESGEN_OUTPUTS, else everything local.",
+    )
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
