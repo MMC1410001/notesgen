@@ -242,6 +242,9 @@ no diagram:
   `sequenceDiagram`, or `stateDiagram-v2`.
 - Node ids must be simple alphanumerics (`nodeA`, `step1`). Put all punctuation
   inside the quoted label: `nodeA["ChatOpenAI (paid)"]`.
+- Never use a Mermaid keyword as a node id - `graph`, `end`, `state`, `class`,
+  `style`, `click`, `subgraph`, `direction`, `note`. They break the parser.
+  Write `graphNode["compiled graph"]`, not `graph["compiled graph"]`.
 - Quote every label containing a space, bracket, comma, or symbol.
 - No HTML, no `<br>`, no CSS, no `style`/`classDef` lines, no emoji.
 - Keep it to at most 12 nodes. A diagram too dense to read teaches nothing.

@@ -7,6 +7,7 @@ course, so `**kwargs`, `x**2` and `{**d1, **d2}` appear constantly in prose --
 a loose bold regex silently eats them.
 """
 
+from notesgen.diagrams import sanitize
 from notesgen.mdparse import parse_blocks, strip_inline
 
 INLINE_CASES = [
@@ -25,6 +26,21 @@ INLINE_CASES = [
 ]
 
 TABLE_MD = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+
+MERMAID_MD = "```mermaid\nflowchart LR\n  a --> b\n```\n"
+
+# Mermaid keywords used as node ids break the parser; keywords heading a
+# statement must survive. One un-renderable diagram is worse than none.
+SANITIZE_CASES = [
+    ('flowchart LR\n  graph["compiled graph"] --> x',
+     'flowchart LR\n  graphNode["compiled graph"] --> x'),
+    ('flowchart TB\n  subgraph one\n    direction TB\n    a --> b\n  end',
+     'flowchart TB\n  subgraph one\n    direction TB\n    a --> b\n  end'),
+    ('flowchart LR\n  ok["this graph label stays"] --> y',
+     'flowchart LR\n  ok["this graph label stays"] --> y'),
+    ('sequenceDiagram\n  participant A\n  A->>B: hi',
+     'sequenceDiagram\n  participant A\n  A->>B: hi'),
+]
 
 HEADING_MD = "# Title\n\n### Summary\n\n#### Detail\n"
 
@@ -51,6 +67,17 @@ def main() -> int:
     if levels != [1, 2, 3]:
         failures += 1
         print(f"FAIL heading levels: {levels}")
+
+    blocks = list(parse_blocks(MERMAID_MD))
+    if len(blocks) != 1 or blocks[0].kind != "mermaid":
+        failures += 1
+        print(f"FAIL mermaid block: got {[b.kind for b in blocks]}")
+
+    for src, want in SANITIZE_CASES:
+        got = sanitize(src)
+        if got != want:
+            failures += 1
+            print(f"FAIL sanitize:\n  want {want!r}\n  got  {got!r}")
 
     callouts = [b for b in parse_blocks("> [!] Code shown on screen.\n") if b.is_callout]
     if not callouts:

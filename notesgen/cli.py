@@ -139,7 +139,7 @@ def cmd_diagram(args) -> int:
 
 
 def cmd_build(args) -> int:
-    course_dir, name, _, md_root, docx_root, _ = _paths(args)
+    course_dir, name, root, md_root, docx_root, _ = _paths(args)
     if not md_root.exists():
         print(f"no generated notes at {md_root}; run `generate` first", file=sys.stderr)
         return 1

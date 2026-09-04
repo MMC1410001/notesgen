@@ -10,6 +10,7 @@ generated is modified.
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,28 @@ from .manifest import Manifest
 from .mdparse import parse_blocks
 
 NO_DIAGRAM = "_No diagram adds anything to this section._"
+
+# Mermaid keywords that blow up the parser when used as a node id. The model
+# reaches for `graph`, `end` and `state` naturally when describing these
+# systems, so rename them rather than relying on the prompt alone.
+RESERVED = {
+    "graph", "end", "subgraph", "class", "classDef", "click", "style",
+    "linkStyle", "direction", "flowchart", "state", "note", "call", "href",
+}
+QUOTED = re.compile(r'("[^"]*")')
+
+# Lines that are Mermaid statements rather than node references. These keep
+# their keywords: `flowchart LR`, a bare `end` closing a subgraph, `direction`.
+DECLARATION = re.compile(
+    r"^\s*(?:"
+    r"(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b"
+    r"|(?:sequenceDiagram|stateDiagram-v2|stateDiagram|classDiagram|erDiagram"
+    r"|journey|gantt|pie|mindmap|timeline)\b"
+    r"|(?:end|subgraph|direction|classDef|class|style|click|linkStyle|note"
+    r"|state|participant|actor|autonumber)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 MERMAID_CONFIG = '{"theme":"neutral","flowchart":{"htmlLabels":false}}'
 
@@ -75,7 +98,7 @@ def generate(
                 print(f"  FAILED diagrams {section.idx}: {exc}")
                 continue
 
-            text = result.text.strip()
+            text = _sanitize_document(result.text.strip())
             n = len(_mermaid_blocks(text))
             if not n:
                 stats["none"] += 1
@@ -95,6 +118,48 @@ def generate(
             print(f"  {section.idx}-{section.title[:44]}  ({n} diagram(s))")
 
     return stats
+
+
+def _sanitize_document(markdown: str) -> str:
+    """Run `sanitize` over every mermaid fence in a generated document."""
+    out, in_fence, buf = [], False, []
+    for line in markdown.splitlines():
+        if line.strip().startswith("```"):
+            if in_fence:
+                out.append(sanitize("\n".join(buf)))
+                buf, in_fence = [], False
+            else:
+                in_fence = line.strip().lower().startswith("```mermaid")
+            out.append(line)
+            continue
+        (buf if in_fence else out).append(line)
+    if buf:
+        out.append(sanitize("\n".join(buf)))
+    return "\n".join(out)
+
+
+def sanitize(source: str) -> str:
+    """Rename reserved-word node ids, leaving declarations and labels alone.
+
+    `graph["compiled graph"]` is a node id and breaks the parser; `flowchart LR`
+    and a bare `end` closing a subgraph are statements and must survive
+    untouched. The difference is whether the keyword heads a declaration.
+    """
+    out_lines = []
+    for line in source.splitlines():
+        if DECLARATION.match(line):
+            out_lines.append(line)
+            continue
+        # Split on quoted spans so label text is never rewritten - only ids.
+        parts = QUOTED.split(line)
+        for i, part in enumerate(parts):
+            if part.startswith('"'):
+                continue
+            for word in RESERVED:
+                part = re.sub(rf"(?<![\w\"]){re.escape(word)}(?![\w\"])", f"{word}Node", part)
+            parts[i] = part
+        out_lines.append("".join(parts))
+    return "\n".join(out_lines)
 
 
 def _mermaid_blocks(markdown: str) -> list[str]:
