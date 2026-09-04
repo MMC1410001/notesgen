@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from . import gdocs
 from . import generate as gen
 from . import ingest
 from . import links as links_mod
+from .providers import base as providers_base
 from . import setup_cmd
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
 from .glossary import Glossary
@@ -191,7 +193,25 @@ def cmd_fetch(args) -> int:
 
 
 def cmd_links(args) -> int:
-    """Print where this course's notes live."""
+    """Print where a course's notes live, or every course's if none is named."""
+    output_root = Path(args.output).expanduser().resolve()
+
+    if not (args.input or args.course):
+        courses = links_mod.all_courses(output_root)
+        if not courses:
+            print(f"\n  nothing generated yet under {output_root}")
+            return 0
+        print(f"\n  {len(courses)} course(s) under {output_root}\n")
+        for name, course_dir, found in courses:
+            print(f"  {name}")
+            if found:
+                for _label, url in found:
+                    print(f"    {url}")
+            else:
+                print("    not published to Google Docs yet")
+            print()
+        return 0
+
     _course_dir, name, root, _md, _docx, manifest_path = _paths(args)
     if not manifest_path.exists():
         print(f"nothing generated yet for {name}", file=sys.stderr)
@@ -302,6 +322,9 @@ def cmd_run(args) -> int:
 
 
 def main(argv=None) -> int:
+    # Load .env first so every default below can come from it.
+    providers_base.load_dotenv()
+
     parser = argparse.ArgumentParser(
         prog="notesgen",
         description="Turn Udemy course transcripts into revision notes as .docx",
@@ -311,13 +334,20 @@ def main(argv=None) -> int:
     def common(p, *, generating=False, building=False, exporting=False):
         p.add_argument(
             "--input", "-i",
+            default=os.environ.get("NOTESGEN_INPUT") or None,
             help="a .zip from the Udemy Transcript Extractor, an extracted "
-                 "folder, or a Udemy course URL",
+                 "folder, or a Udemy course URL. Defaults to $NOTESGEN_INPUT.",
         )
         p.add_argument("--course", help=argparse.SUPPRESS)  # old name, still works
-        p.add_argument("--output", default=str(DEFAULT_OUTPUT))
-        p.add_argument("--input-dir", default=str(DEFAULT_INPUT),
-                       help="where zips are extracted and URL fetches are saved")
+        p.add_argument(
+            "--output",
+            default=os.environ.get("NOTESGEN_OUTPUT") or str(DEFAULT_OUTPUT),
+        )
+        p.add_argument(
+            "--input-dir",
+            default=os.environ.get("NOTESGEN_INPUT_DIR") or str(DEFAULT_INPUT),
+            help="where zips are extracted and URL fetches are saved",
+        )
         p.add_argument(
             "--attach", type=int, metavar="PORT", nargs="?", const=9222,
             help="attach to a Chrome you started with --remote-debugging-port "
@@ -328,9 +358,13 @@ def main(argv=None) -> int:
         if generating:
             p.add_argument(
                 "--provider", choices=["claude-cli", "anthropic", "openai", "gemini"],
-                help="default: claude CLI if installed, else whichever API key is set",
+                default=os.environ.get("NOTESGEN_PROVIDER") or None,
+                help="default: $NOTESGEN_PROVIDER, else the claude CLI if "
+                     "installed, else whichever API key is set",
             )
-            p.add_argument("--model", default="sonnet")
+            p.add_argument(
+                "--model", default=os.environ.get("NOTESGEN_MODEL") or "sonnet"
+            )
             p.add_argument("--workers", type=int, default=3)
             p.add_argument("--glossary", help="override glossary.yml")
             p.add_argument("--force", action="store_true", help="regenerate even if current")

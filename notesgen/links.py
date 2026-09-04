@@ -48,6 +48,25 @@ def write_file(root: Path, course: str, links: list[tuple[str, str]]) -> Path | 
     return path
 
 
+def all_courses(output_root: Path) -> list[tuple[str, Path, list[tuple[str, str]]]]:
+    """Every course processed so far, with its links.
+
+    Each course keeps its own directory and manifest under `output/`, so
+    running several courses never mixes them up.
+    """
+    from .manifest import Manifest
+
+    found = []
+    if not output_root.is_dir():
+        return found
+    for course_dir in sorted(p for p in output_root.iterdir() if p.is_dir()):
+        manifest_path = course_dir / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        found.append((course_dir.name, course_dir, collect(Manifest(manifest_path))))
+    return found
+
+
 def show(links: list[tuple[str, str]], *, indent: str = "  ") -> None:
     if not links:
         return

@@ -25,14 +25,15 @@ A real run: a 26-section, 183-lecture course became 202,000 words of notes and
 
 1. [Before you start](#1-before-you-start)
 2. [Install](#2-install)
-3. [Get the transcripts](#3-get-the-transcripts)
-4. [Choose who writes the notes](#4-choose-who-writes-the-notes)
-5. [Generate the notes](#5-generate-the-notes)
-6. [Get your notes out](#6-get-your-notes-out)
-7. [Google Docs setup, in full](#7-google-docs-setup-in-full)
-8. [Command reference](#8-command-reference)
-9. [Troubleshooting](#9-troubleshooting)
-10. [How it works, and what it will not do](#10-how-it-works-and-what-it-will-not-do)
+3. [Configure once (optional)](#2b-configure-once-optional)
+4. [Get the transcripts](#3-get-the-transcripts)
+5. [Choose who writes the notes](#4-choose-who-writes-the-notes)
+6. [Generate the notes](#5-generate-the-notes)
+7. [Get your notes out](#6-get-your-notes-out)
+8. [Google Docs setup, in full](#7-google-docs-setup-in-full)
+9. [Command reference](#8-command-reference)
+10. [Troubleshooting](#9-troubleshooting)
+11. [How it works, and what it will not do](#10-how-it-works-and-what-it-will-not-do)
 
 ---
 
@@ -88,6 +89,44 @@ python3 -m notesgen --help
 
 ---
 
+## 2b. Configure once (optional)
+
+Every option can be set in a `.env` file so you stop repeating flags:
+
+```bash
+cp .env.example .env
+```
+
+```ini
+# what to process — a URL, a zip, or a folder
+NOTESGEN_INPUT=https://www.udemy.com/course/YOUR-COURSE-SLUG/
+
+# which model writes the notes
+NOTESGEN_PROVIDER=gemini
+GEMINI_API_KEY=your-key-here
+```
+
+Then commands need no arguments at all:
+
+```bash
+python3 -m notesgen run
+```
+
+| Variable | Sets |
+|---|---|
+| `NOTESGEN_INPUT` | default for `-i` — URL, zip, or folder |
+| `NOTESGEN_PROVIDER` | `claude-cli` / `anthropic` / `openai` / `gemini` |
+| `NOTESGEN_MODEL` | override the model |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | API keys |
+| `NOTESGEN_OUTPUT` | where notes are written (default `./output`) |
+| `NOTESGEN_INPUT_DIR` | where zips are unpacked (default `./input`) |
+| `NOTESGEN_BROWSER_PROFILE` | signed-in Chrome profile (default `~/.notesgen/browser-profile`) |
+
+A command-line flag always beats `.env`, and a real environment variable beats
+both. `.env` is gitignored, so keys and course URLs stay on your machine.
+
+---
+
 ## 3. Get the transcripts
 
 Two ways. **The browser extension is easier and is the recommended route.**
@@ -117,9 +156,23 @@ password, Google, SSO, 2FA, whatever. Then leave it alone: the download starts
 by itself and saves a `.zip` under `input/`.
 
 Your credentials are never seen, typed or stored by this tool. The session
-stays in a browser profile under `input/.browser-profile`, so you only sign in
-once. Under the hood it calls the same undocumented Udemy endpoints the
-extension does, from inside your own logged-in browser.
+stays in a Chrome profile at `~/.notesgen/browser-profile`, so you only sign in
+once — change it with `NOTESGEN_BROWSER_PROFILE`. It is deliberately kept
+outside the project: it holds a live Udemy session, and should not travel with
+your transcripts if you copy or share that folder. Under the hood it calls the
+same undocumented Udemy endpoints the extension does, from inside your own
+logged-in browser.
+
+You can also set the course URL once and drop the argument:
+
+```ini
+# .env
+NOTESGEN_INPUT=https://www.udemy.com/course/YOUR-COURSE-SLUG/
+```
+
+```bash
+python3 -m notesgen fetch
+```
 
 If Udemy keeps asking whether you are human, see
 [Troubleshooting](#9-troubleshooting).
@@ -134,6 +187,49 @@ You never have to unzip anything or find the "right" folder:
 | An extracted folder | `-i "path/to/MyCourse"` |
 | The folder *above* it | `-i "path/to"` — it finds the course inside |
 | Only the course URL | `-i "https://www.udemy.com/course/..."` |
+
+### Running more than one course
+
+**One course per command.** `--input` takes a single course, not a list.
+
+Courses never interfere with each other: each gets its own folder under
+`output/<course name>/`, with its own notes, its own progress file, and its own
+Google Doc. Run them one after another —
+
+```bash
+python3 -m notesgen run -i "https://www.udemy.com/course/first-course/"
+python3 -m notesgen run -i "https://www.udemy.com/course/second-course/"
+```
+
+— or loop:
+
+```bash
+for url in \
+  "https://www.udemy.com/course/first-course/" \
+  "https://www.udemy.com/course/second-course/"
+do
+  python3 -m notesgen run -i "$url"
+done
+```
+
+If you set `NOTESGEN_INPUT` in `.env` it applies when you pass no `-i`; passing
+`-i` overrides it for that run.
+
+To see everything you have processed, with each course's Google Doc:
+
+```bash
+python3 -m notesgen links
+```
+
+```
+  2 course(s) under ./output
+
+  Complete Agentic AI Bootcamp With LangGraph and Langchain
+    https://docs.google.com/document/d/1_SEz.../edit
+
+  Another Course You Ran
+    not published to Google Docs yet
+```
 
 Sanity-check before spending anything — this makes no model calls:
 
@@ -339,7 +435,8 @@ You do not have to keep the terminal open. The link is saved and shown in
 several places:
 
 ```bash
-python3 -m notesgen links -i "MyCourse-transcripts.zip"
+python3 -m notesgen links -i "MyCourse-transcripts.zip"   # one course
+python3 -m notesgen links                                # every course
 ```
 
 It is also printed at the end of `discover` and `run`, and written to
@@ -362,7 +459,7 @@ section instead of one big one.
 | `build` | Make `.docx` | free |
 | `export` | Make `.html`, `.txt`, `.md` | free |
 | `push` | Publish to Google Docs | free |
-| `links` | Show where a course's notes live | free |
+| `links` | Show where notes live (all courses if no `-i`) | free |
 | `run` | Everything above, in order | — |
 | `setup` | Install optional extras | free |
 

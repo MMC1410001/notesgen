@@ -351,6 +351,21 @@ def _wait_for_login(page, course_url: str) -> str:
     )
 
 
+def browser_profile_dir() -> Path:
+    """Where the signed-in Chrome profile lives.
+
+    Kept out of the transcripts folder: that directory holds course content
+    you may want to move, copy or delete, and a browser profile carrying a
+    live Udemy session has no business travelling with it.
+    """
+    import os
+
+    configured = os.environ.get("NOTESGEN_BROWSER_PROFILE")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".notesgen" / "browser-profile"
+
+
 def _launch(pw, profile: Path, headless: bool, cdp_port: int | None):
     """Return (context, close_fn).
 
@@ -404,7 +419,7 @@ def fetch(
             "extension and pass the .zip to --input instead."
         ) from exc
 
-    profile = workdir / ".browser-profile"
+    profile = browser_profile_dir()
     profile.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
