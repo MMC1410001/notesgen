@@ -1,279 +1,474 @@
 # notesgen
 
-Turns Udemy course transcripts into structured revision notes as `.docx`
-files you upload to Google Docs — so you can watch the course instead of
-pausing to write notes.
+Turn a Udemy course into structured revision notes — so you can watch the
+course instead of pausing every minute to write things down.
 
-## Getting transcripts
+Point it at a course. It reads the transcripts, writes notes for every lecture,
+draws diagrams, and hands you the result as a Google Doc, a Word file, a web
+page, or plain text.
 
-Easiest path — the **[Udemy Transcript Extractor](https://chromewebstore.google.com/detail/udemy-transcript-extracto/oimlbilmdnimabebeilpndlndfoepopd)**
-Chrome extension. Open a course you're enrolled in, click the extension, choose
-*Extract transcripts*; about two minutes later you get a `.zip`. Hand that zip
-straight to `--input`. It runs entirely in your browser and reaches Udemy's
-internal API through your own logged-in session.
+**What you get, per lecture:**
 
-`notesgen` can also fetch a course itself — see [Fetching by URL](#fetching-by-url).
+- **Summary** — objective, key concepts with definitions, takeaways
+- **Cheat-sheet** — the syntax, commands and gotchas worth revisiting
+- **Recall** — question/answer pairs for active revision
+- **Code walkthrough** — the code the instructor actually talked through
 
-## Input layout
+Plus a per-section overview with diagrams, and a course-level index.
 
+A real run: a 26-section, 183-lecture course became 202,000 words of notes and
+61 diagrams across 28 documents.
+
+---
+
+## Contents
+
+1. [Before you start](#1-before-you-start)
+2. [Install](#2-install)
+3. [Get the transcripts](#3-get-the-transcripts)
+4. [Choose who writes the notes](#4-choose-who-writes-the-notes)
+5. [Generate the notes](#5-generate-the-notes)
+6. [Get your notes out](#6-get-your-notes-out)
+7. [Google Docs setup, in full](#7-google-docs-setup-in-full)
+8. [Command reference](#8-command-reference)
+9. [Troubleshooting](#9-troubleshooting)
+10. [How it works, and what it will not do](#10-how-it-works-and-what-it-will-not-do)
+
+---
+
+## 1. Before you start
+
+You need:
+
+- **Python 3.10 or newer.** Check with `python3 --version`. If that fails,
+  install it from [python.org](https://www.python.org/downloads/).
+- **A Udemy course you are enrolled in.** This reads captions from courses on
+  your own account; it cannot reach anything you have not bought.
+- **Something to write the notes.** Either the
+  [Claude Code](https://claude.com/claude-code) CLI (uses your existing
+  subscription, no API key, no per-token bill) or an API key from Anthropic,
+  OpenAI or Google. Section 4 covers both.
+
+Optional, and only if you want them:
+
+- **Google account** — to publish notes straight into Google Docs (section 7)
+- **Node.js** — to render diagrams into Word documents. Diagrams work in the
+  web page output without it.
+
+**Time and cost.** A 180-lecture course takes about an hour to process. On the
+Claude Code subscription there is no extra charge. On a paid API it is roughly
+$2–6 for a whole course depending on the model.
+
+---
+
+## 2. Install
+
+```bash
+git clone https://github.com/MMC1410001/notesgen.git
+cd notesgen
+python3 -m pip install pyyaml python-docx
 ```
-<course>/
-    11-Getting Started With LangGraph/
-        01-Introduction To LangGraph.txt
-    _full-transcript.txt          <- ignored
+
+That covers everything core: notes, Word documents, web pages, plain text.
+
+Two features need extra packages. Install only what you want:
+
+```bash
+python3 -m notesgen setup                  # show what is and is not installed
+python3 -m notesgen setup --extra udemy    # fetch transcripts from a course URL
+python3 -m notesgen setup --extra gdocs    # publish to Google Docs
+python3 -m notesgen setup --extra api      # use Anthropic / OpenAI / Gemini APIs
 ```
 
-Each `.txt` starts with a `Course: / Chapter: / Lecture:` header followed by a
-dashed rule; everything after it is the transcript body.
+Check it works:
 
-**`--input` accepts any of three things** and figures out which it got:
+```bash
+python3 -m notesgen --help
+```
+
+---
+
+## 3. Get the transcripts
+
+Two ways. **The browser extension is easier and is the recommended route.**
+
+### Option A — the browser extension (recommended)
+
+Install
+**[Udemy Transcript Extractor](https://chromewebstore.google.com/detail/udemy-transcript-extracto/oimlbilmdnimabebeilpndlndfoepopd)**
+for Chrome.
+
+1. Open a course you are enrolled in.
+2. Click the extension icon → **Extract transcripts**.
+3. Wait about two minutes for a 200-lecture course. You get a `.zip`.
+
+That zip is what you feed in. Everything runs in your browser; nothing is
+uploaded anywhere.
+
+### Option B — let notesgen fetch them
+
+```bash
+python3 -m notesgen setup --extra udemy
+python3 -m notesgen fetch -i "https://www.udemy.com/course/YOUR-COURSE-SLUG/"
+```
+
+A Chrome window opens on the course page. **Sign in the way you normally do** —
+password, Google, SSO, 2FA, whatever. Then leave it alone: the download starts
+by itself and saves a `.zip` under `input/`.
+
+Your credentials are never seen, typed or stored by this tool. The session
+stays in a browser profile under `input/.browser-profile`, so you only sign in
+once. Under the hood it calls the same undocumented Udemy endpoints the
+extension does, from inside your own logged-in browser.
+
+If Udemy keeps asking whether you are human, see
+[Troubleshooting](#9-troubleshooting).
+
+### What `--input` accepts
+
+You never have to unzip anything or find the "right" folder:
 
 | You have | Pass |
 |---|---|
-| The extension's `.zip` | `-i "MyCourse-transcripts.zip"` |
+| The extension's zip | `-i "MyCourse-transcripts.zip"` |
 | An extracted folder | `-i "path/to/MyCourse"` |
-| Its parent folder | `-i "path/to"` — it descends automatically |
+| The folder *above* it | `-i "path/to"` — it finds the course inside |
 | Only the course URL | `-i "https://www.udemy.com/course/..."` |
 
-## Usage
+Sanity-check before spending anything — this makes no model calls:
 
 ```bash
-# See the course tree and which lectures have broken captions. No model calls.
-python3 -m notesgen discover -i "<zip | folder | url>"
-
-# Download transcripts only (unpack a zip, or fetch a URL) and stop
-python3 -m notesgen fetch -i "<zip | folder | url>"
-
-# Generate Markdown notes (per lecture + per section + a course index)
-python3 -m notesgen generate -i "<zip | folder | url>"
-
-# Add Mermaid diagrams per section (reads existing notes; ~27 calls)
-python3 -m notesgen diagram -i "<zip | folder | url>"
-
-# Assemble .docx from the Markdown
-python3 -m notesgen build -i "<zip | folder | url>"
-
-# Write .html / .txt / .md for copy-pasting (no model calls)
-python3 -m notesgen export -i "<zip | folder | url>"
-
-# Upload to Google Docs
-python3 -m notesgen push -i "<zip | folder | url>"
-
-# Everything: generate, diagram, build .docx, export every format
-python3 -m notesgen run -i "<zip | folder | url>"
+python3 -m notesgen discover -i "MyCourse-transcripts.zip"
 ```
 
-(`--course` is still accepted as an alias for `--input`.)
+It prints every section, the lecture count, and flags any lecture whose
+captions failed.
 
-## Choosing a provider
+---
 
-`generate` is the only command that calls a model. Pick the backend with
-`--provider`, or set `NOTESGEN_PROVIDER`. With nothing configured it uses the
-`claude` CLI when installed, then whichever API key it finds.
+## 4. Choose who writes the notes
 
-| Provider | Auth | Default model | Notes |
-|---|---|---|---|
-| `claude-cli` | your Claude Code subscription | `sonnet` | **No API key, no per-token bill.** The default. |
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` | `--model claude-opus-5` for the strongest |
-| `openai` | `OPENAI_API_KEY` | `gpt-4o` | |
-| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | cheapest per token |
+`generate` is the only command that costs anything. Everything else is local.
 
-Keys come from the environment or a `.env` in the project root — copy
-`.env.example` to `.env`. An exported variable always beats the file. Selecting
-a provider whose key is missing stops the run immediately and names the
-variable to set, rather than failing 183 lectures one at a time.
+| Provider | What you need | Cost |
+|---|---|---|
+| **`claude-cli`** *(default)* | [Claude Code](https://claude.com/claude-code) installed and signed in | Included in your subscription |
+| `anthropic` | `ANTHROPIC_API_KEY` from [console.anthropic.com](https://console.anthropic.com/) | Pay per token |
+| `openai` | `OPENAI_API_KEY` from [platform.openai.com](https://platform.openai.com/api-keys) | Pay per token |
+| `gemini` | `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com/apikey) | Pay per token, cheapest |
 
-API providers need their SDK: `pip install anthropic` / `openai` /
-`google-genai`. Only the one you use.
+With Claude Code installed you need to do nothing — it is picked automatically.
 
-## Diagrams
-
-`notesgen diagram` adds system-structure, control-flow and state diagrams to
-each section — the AI writes them as **Mermaid**, so labels and arrows are
-correct rather than the smeared text a diffusion image model produces on
-technical material. The prompt explicitly rejects mind maps, concept bubbles
-and course-structure diagrams; a section with nothing worth drawing says so
-instead of padding.
-
-It reads the **notes that already exist**, not the transcripts, so adding
-diagrams to a finished course costs ~27 calls rather than regenerating every
-lecture. Output goes to its own `_diagrams.md` per section, so nothing already
-generated is rewritten.
-
-| Format | How diagrams appear |
-|---|---|
-| `html/` | rendered live by mermaid.js; pastes into Word as a picture |
-| `docx/` | rendered to PNG and embedded |
-| `txt/`, `export-md/` | diagram source (GitHub and Obsidian render it natively) |
-
-`.docx` embedding needs a renderer: `npm install -g @mermaid-js/mermaid-cli`,
-or let `npx` fetch it on first run. Without one the `.docx` shows the diagram
-source and says so — it never fails the build. Rendered PNGs are cached by
-content hash, so rebuilding is instant.
-
-## Google Docs
+To use an API instead, copy the example file and fill in one key:
 
 ```bash
-pip install google-api-python-client google-auth-oauthlib
-python3 -m notesgen push -i "<zip | folder | url>"
+cp .env.example .env
 ```
 
-Builds one `.docx` for the whole course and uploads it to Drive asking for
-conversion to a native Google Doc. Heading styles become the Docs outline
-(**View → Show outline**) and the diagram images come along inside the file.
-`--split-sections` uploads one Doc per section into a Drive folder instead.
+```ini
+NOTESGEN_PROVIDER=gemini
+GEMINI_API_KEY=your-key-here
+```
 
-If your OAuth app is in **Testing** mode, add your own address under
-**APIs & Services → OAuth consent screen → Test users** first, or Google
-rejects the sign-in with `403: access_denied` before showing a consent
-screen. You will also see an "unverified app" warning — that is expected for
-your own unpublished client.
+`.env` is gitignored. Environment variables override it. You can also pick per
+run with `--provider gemini`.
 
-First run prints instructions for creating a one-time OAuth desktop client;
-the token is cached in `.gdocs/` (gitignored) so later runs are silent. The
-scope requested is `drive.file`, which only grants access to files this tool
-itself creates — it cannot see the rest of your Drive. Re-running updates the
-same document rather than creating duplicates, so a shared link keeps working.
+If you select a provider whose key is missing, the run stops immediately and
+tells you which variable to set — it does not fail 183 lectures one at a time.
 
-**On tabs:** the Docs API cannot create them. Both it and Apps Script expose
-only `getTab` / `getTabs` / `getActiveTab` / `setActiveTab` — there is no
-`addTab` in either — so navigation is the heading outline, not tabs.
+---
 
-## Fetching by URL
+## 5. Generate the notes
 
 ```bash
-pip install playwright && playwright install chromium
-python3 -m notesgen fetch -i "https://www.udemy.com/course/your-course/"
+python3 -m notesgen generate -i "MyCourse-transcripts.zip"
 ```
 
-A real Chromium window opens on the course page. **You** sign in — including
-SSO and 2FA — and the fetch then runs inside that authenticated session,
-calling the same undocumented Udemy endpoints the extension uses:
+This writes one Markdown file per lecture, a section overview for each section,
+and a course index. Expect roughly an hour for 180 lectures.
 
+**You can stop it at any time.** Progress is checkpointed after every lecture,
+so re-running the same command picks up where it left off and skips everything
+already done. If you hit a usage limit, just run it again later.
+
+Add diagrams (optional, about 27 extra calls):
+
+```bash
+python3 -m notesgen diagram -i "MyCourse-transcripts.zip"
 ```
-/api-2.0/courses/{id}/subscriber-curriculum-items/
-/api-2.0/users/me/subscribed-courses/{id}/lectures/{id}/
+
+These are system-structure and flow diagrams drawn from your notes — not
+decorative clip art. Sections with nothing worth drawing say so instead of
+padding.
+
+---
+
+## 6. Get your notes out
+
+```bash
+python3 -m notesgen build  -i "MyCourse-transcripts.zip"   # Word (.docx)
+python3 -m notesgen export -i "MyCourse-transcripts.zip"   # web page, text, markdown
+python3 -m notesgen push   -i "MyCourse-transcripts.zip"   # Google Docs
 ```
 
-The tool never sees, extracts, or stores your credentials; the session stays in
-the browser profile under `input/.browser-profile`, so you sign in once rather
-than once per run. Output is written as the same folder layout and `.zip` the
-extension produces.
-
-Two things worth knowing: those endpoints are internal and can change without
-notice, and Udemy's terms restrict scraping course content. The extension route
-is the lower-friction and lower-exposure option; this exists for when you'd
-rather not leave the terminal.
-
-## Choosing an output format
-
-`generate` is the only command that costs anything. Every format below is
-local string formatting — producing all three for a 183-lecture course takes
-under a second and costs **nothing**. Format has no bearing on token usage.
+All of these are **free and instant** — local formatting, no model calls. The
+output format has no bearing on cost.
 
 | You want to | Use | How |
 |---|---|---|
-| Paste into Word / Google Docs **with formatting** | `html/` | Open in browser, Cmd+A, Cmd+C, paste |
-| Paste anywhere at all — email, Notes, a ticket, another AI | `txt/` | Open, copy |
-| Notion, Obsidian, GitHub | `export-md/` | One file per section |
-| Upload files to Google Drive | `docx/` | Drag in, open with Google Docs |
+| Read in Google Docs | `push` | see [section 7](#7-google-docs-setup-in-full) |
+| Paste into Word **with formatting** | `html/` | open in a browser, Ctrl/Cmd+A, copy, paste |
+| Paste anywhere — email, Notion, a chat box | `txt/` | open, copy |
+| Notion, Obsidian, GitHub | `export-md/` | one file per section |
+| Upload files to Drive yourself | `docx/` | drag in, open with Google Docs |
 
-`00 - Complete Course.*` in each folder holds every section in one file.
+Everything lands under `output/<course name>/`. Each folder has a short
+`PASTE.md` or `UPLOAD.md` explaining what to do with it. `00 - Complete
+Course.*` holds the entire course in one file.
+
+**Do it all in one go:**
+
+```bash
+python3 -m notesgen run -i "https://www.udemy.com/course/YOUR-COURSE-SLUG/"
+```
+
+That fetches, generates, diagrams, builds and exports.
+
+### Diagrams in Word documents
+
+Diagrams render live in the web page output with no setup. To embed them as
+images in `.docx` and Google Docs you need a renderer:
+
+```bash
+npm install -g @mermaid-js/mermaid-cli
+```
+
+Without it, `.docx` shows the diagram source and says so — it never fails the
+build. If you have Node but not the package, it is fetched automatically on
+first use (that download takes a few minutes once).
+
+---
+
+## 7. Google Docs setup, in full
+
+This is the fiddliest part, and it is entirely Google's doing. It takes about
+five minutes, once. If you would rather skip it: run `export` and drag the
+`docx/` files into Drive by hand — same result, no setup.
+
+### 7.1 Install the packages
+
+```bash
+python3 -m notesgen setup --extra gdocs
+```
+
+### 7.2 Create a Google Cloud project
+
+1. Go to **[console.cloud.google.com](https://console.cloud.google.com/)** and
+   sign in.
+2. Click the project dropdown in the top bar → **New Project**.
+3. Name it anything (`notesgen` is fine) → **Create**.
+4. Wait for it to be created, then make sure it is **selected** in that
+   dropdown. Most problems below come from being in the wrong project.
+
+### 7.3 Enable the Drive API
+
+1. Left menu → **APIs & Services → Library**.
+2. Search for **Google Drive API**.
+3. Open it → **Enable**.
+
+### 7.4 Configure the consent screen
+
+1. **APIs & Services → OAuth consent screen**.
+2. User type: **External** → **Create**.
+3. Fill the required fields — app name (anything), your own email for both
+   *User support email* and *Developer contact*. Everything else can stay
+   empty.
+4. Save and continue through the Scopes and Test users steps.
+
+### 7.5 Add yourself as a test user — do not skip this
+
+1. Still on **OAuth consent screen**, find **Test users** → **+ Add users**.
+2. Enter **the Google address you will sign in with**.
+3. Save.
+
+Skip this and sign-in fails with `Error 403: access_denied` before you ever see
+a consent screen. It is the single most common thing to get wrong.
+
+*(Alternatively click **Publish app**. It stays unverified, so you still get a
+warning screen, but any account can then authorise.)*
+
+### 7.6 Create the OAuth client
+
+1. **APIs & Services → Credentials → + Create credentials → OAuth client ID**.
+2. Application type: **Desktop app**. Name it anything → **Create**.
+3. **Download JSON**.
+4. Save that file into your notesgen folder as exactly:
+
+```
+.gdocs/google-credentials.json
+```
+
+```bash
+mkdir -p .gdocs
+mv ~/Downloads/client_secret_*.json .gdocs/google-credentials.json
+```
+
+`.gdocs/` is gitignored, so it is never committed.
+
+### 7.7 Push
+
+```bash
+python3 -m notesgen push -i "MyCourse-transcripts.zip"
+```
+
+A browser opens once. Sign in **with the address you added as a test user**.
+
+You will see **"Google hasn't verified this app"** — expected for your own
+unpublished client. Click **Advanced → Go to (your app name) (unsafe)**.
+
+The permission requested is `drive.file`: access limited to files this tool
+creates. It cannot see the rest of your Drive.
+
+When it finishes you get a link. Open it and use **View → Show outline** for
+the navigation pane.
+
+Re-running updates the same document instead of making duplicates, so any link
+you have shared keeps working. Add `--split-sections` for one document per
+section instead of one big one.
+
+---
+
+## 8. Command reference
+
+| Command | What it does | Costs |
+|---|---|---|
+| `discover` | List the course, flag broken captions | free |
+| `fetch` | Download transcripts (URL) or unpack a zip | free |
+| `generate` | Write the notes | **the only paid step** |
+| `diagram` | Add diagrams from existing notes | small |
+| `build` | Make `.docx` | free |
+| `export` | Make `.html`, `.txt`, `.md` | free |
+| `push` | Publish to Google Docs | free |
+| `run` | Everything above, in order | — |
+| `setup` | Install optional extras | free |
 
 Useful flags:
 
 | Flag | Effect |
 |---|---|
-| `--section 11 --section 12` | limit to those sections (repeatable) |
-| `--only "11-*/01-*"` | glob over `<section-dir>/<lecture-file>` |
-| `--workers 3` | parallel model calls (default 3) |
-| `--model sonnet` | model passed to `claude -p` |
-| `--force` | regenerate even if already current |
-| `--glossary path.yml` | course-specific term corrections |
-| `--format html` | export only that format (repeatable) |
-| `--no-whole-course` | skip the combined all-sections file |
-| `--no-docx` | on `run`, skip the .docx step |
-| `--max-words 25000` | split oversized sections into Part 1/2/... |
+| `-i`, `--input` | zip, folder, or Udemy URL |
+| `--section 11 --section 12` | limit to those sections |
+| `--only "11-*/01-*"` | limit to matching lectures |
+| `--provider gemini` | pick the model backend |
+| `--model MODEL` | override the model |
+| `--workers 3` | parallel calls (default 3) |
+| `--force` | redo work already done |
+| `--no-diagrams`, `--no-docx`, `--no-images` | skip steps |
+| `--split-sections` | one Google Doc per section |
+| `--attach [PORT]` | drive a Chrome you launched yourself |
 
-## Output
+---
+
+## 9. Troubleshooting
+
+**Udemy keeps asking "are you human?"**
+Close it and try attaching to your own browser instead:
+
+```bash
+./attach-chrome.sh
+# in another terminal, once you are logged in there:
+python3 -m notesgen fetch --attach -i "https://www.udemy.com/course/..."
+```
+
+This drives a Chrome you started, which is ordinary browsing rather than
+automation. Failing that, use the extension (option A in section 3) — it always
+works, because it *is* a browser.
+
+**Udemy returns 403**
+You are signed into the wrong account, or not enrolled in that course. Check
+the browser window is on the account that owns it.
+
+**`Error 403: access_denied` from Google**
+You are not on the test-user list — see [7.5](#75-add-yourself-as-a-test-user--do-not-skip-this).
+Also confirm you are in the right Cloud project and that the Drive API is
+enabled.
+
+**"Google hasn't verified this app"**
+Expected. Click **Advanced → Go to (app) (unsafe)**. It is your own client.
+
+**`provider 'x' needs Y_API_KEY`**
+Set that variable in `.env` or your environment, or drop `--provider` to use
+Claude Code.
+
+**A lecture failed**
+Re-run the same command. Finished work is skipped; only failures are retried.
+
+**Notes for one lecture say the transcript was missing**
+Udemy had no usable captions for it. That is reported rather than guessed at —
+watch that lecture directly.
+
+---
+
+## 10. How it works, and what it will not do
+
+### The pipeline
 
 ```
-output/<course>/
-    md/                     one .md per lecture, plus _section-overview.md
-    docx/                   one .docx per section, plus 00 - Course Index.docx
-    html/                   per section + whole course, for pasting
-    txt/                    per section + whole course, plain text
-    export-md/              per section + whole course, concatenated Markdown
-    manifest.json           what has been generated, for resume
+transcripts → fix caption errors → notes per lecture → section overviews
+           → course index → diagrams → .docx / .html / .txt / .md / Google Docs
 ```
 
-Each export folder carries a `PASTE.md` describing its workflow, and `docx/`
-carries `UPLOAD.md`. Headings map to real heading styles in both `.docx` and
-`.html`, so Google Docs' **View → Show outline** pane works either way.
+### Caption errors are fixed before the model sees them
 
-## What the output looks like
+Udemy's auto-captions mangle product names consistently — *Landgraf* and *line
+graph* for LangGraph, *Lankin* for LangChain, *genetic AI* for agentic AI,
+*grok* for Groq. One lecture in the test course had 36 such errors; the course
+had 1,200. `glossary.yml` repairs them by pattern before anything is generated.
 
-[`docs/example-note.md`](docs/example-note.md) is one lecture's notes as
-generated — a single sample. The notes for a full course are not published
-here; they are derived from paid course content and stay local (see
-`.gitignore`).
+Add your own for your subject. One rule matters: **never add a variant that is
+also an ordinary English word.** `Face`/`Phase` → `FAISS` is tempting and would
+corrupt every legitimate use of those words.
 
-## How it works, and the two things that matter
+### It tells you what it does not know
 
-**Term correction (`glossary.yml`).** Udemy's auto-captions mangle product
-names consistently — *Landgraf* / *line graph* for LangGraph, *Lankin* for
-LangChain, *genetic AI* for agentic AI, *grok* for Groq. One lecture in the
-reference course contained 36 such errors. They are repaired by regex before
-the model sees the text, so it never has to guess.
+Transcripts are audio only. Code the instructor typed on screen without
+narrating is simply absent, so the notes mark it:
 
-There is a safety rule in that file worth respecting: **never add a variant
-that is also an ordinary English word.** `Face`/`Phase` → `FAISS` is tempting
-and would corrupt every legitimate use of those words across the course.
+> ⚠️ Code shown on screen, not described in the audio.
 
-**Grounding.** Transcripts are audio-only: code the instructor typed on screen
-without narrating is simply absent. The prompt forbids reconstructing it and
-requires the model to emit
+Lectures whose captions failed entirely are **never sent to the model** — they
+get an honest "no transcript" note. A confident-looking page built from six
+words is worse than an admitted gap.
 
-> [!] Code shown on screen, not described in the audio.
+Notes reflect *what the course taught*, not what is objectively true. Where an
+instructor is loose, the notes follow the lecture. They are revision notes for
+that course.
 
-Lectures whose captions failed outright (under 200 words) are **never sent to
-the model at all** — they get a fixed stub saying so. A confident-looking page
-built from 6 words is worse than an honest gap. Sections where every lecture
-is a stub skip their rollup too.
+### Limits worth knowing
 
-Notes therefore reflect *what the course taught*, not what is objectively
-true. Where the instructor is loose — calling LangGraph a DAG, for instance,
-when its whole point is that it supports cycles — the notes follow the
-lecture. That is deliberate: they are revision notes for this course.
+- **Google Docs tabs cannot be created by any API.** The Docs API and Apps
+  Script both offer only `getTab`/`getTabs`/`getActiveTab`/`setActiveTab`.
+  Navigation is the heading outline instead.
+- **Diagrams are Mermaid, authored by the model** — flowcharts, sequence and
+  state diagrams. Not image-model illustrations, which garble text labels on
+  technical material.
+- **Very long documents load slowly in Google Docs.** Use `--split-sections`.
+- **Udemy's terms restrict redistributing course content.** These notes are
+  derived from material you paid for; keep them for yourself. `output/` is
+  gitignored for exactly this reason.
 
-## Resume
+### Repeat runs
 
-`manifest.json` keys each unit by a SHA-256 of its source text. Re-running
-skips anything unchanged, so a run interrupted by a usage limit picks up where
-it stopped — just run the same command again. `--force` overrides.
+`manifest.json` records a hash of every input. Re-running skips anything
+unchanged, so an interrupted run resumes cleanly and a re-run after editing one
+transcript regenerates only that lecture. `--force` overrides.
 
-Failures are per-lecture and never abort the run; re-run to retry only those.
+### Tests
 
-## Architecture
+```bash
+python3 tests_mdparse.py
+```
 
-One Markdown parser, four renderers. `mdparse.py` turns the generated notes
-into typed blocks and inline spans; `assemble.py` decides what goes into each
-document and how oversized sections split. The `.docx`, HTML and plain-text
-renderers all consume those, so a fix to tables or emphasis lands in every
-format at once rather than in one of three copies.
-
-`python3 tests_mdparse.py` covers the parser. The emphasis cases there matter
-more than they look: these notes cover a Python course, so `**kwargs`, `x**2`
-and `{**d1, **d2}` appear constantly in prose, and a loose bold regex silently
-eats them. Markdown's own rule — emphasis markers may not sit beside a space —
-is what protects them.
-
-## Requirements
-
-- Python 3.10+, `pyyaml`, `python-docx`.
-- **One** of: the `claude` CLI on PATH and logged in (uses the Claude Code
-  subscription — no API key, no per-token bill; the code deliberately avoids
-  `--bare`, which would force `ANTHROPIC_API_KEY` auth instead), or an API key
-  for Anthropic / OpenAI / Gemini plus that provider's SDK.
-- Optional, only for `--input <udemy url>`: `playwright` +
-  `playwright install chromium`. Zip and folder input never need it.
+Covers the Markdown parser and the diagram sanitiser. The emphasis cases matter
+more than they look: a Python course is full of `**kwargs` and `x**2` in prose,
+and a loose bold rule silently eats them.
