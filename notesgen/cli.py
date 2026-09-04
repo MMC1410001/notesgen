@@ -20,6 +20,7 @@ from . import export as export_mod
 from . import gdocs
 from . import generate as gen
 from . import ingest
+from . import setup_cmd
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
 from .glossary import Glossary
 from .manifest import Manifest
@@ -50,7 +51,11 @@ def _paths(args):
     if not source:
         raise SystemExit("--input is required (a .zip, a folder, or a Udemy course URL)")
 
-    course_dir = ingest.resolve_input(source, Path(args.input_dir).expanduser().resolve())
+    course_dir = ingest.resolve_input(
+        source,
+        Path(args.input_dir).expanduser().resolve(),
+        cdp_port=getattr(args, "attach", None),
+    )
     name = course_name(course_dir)
     root = Path(args.output).expanduser().resolve() / course_dir.name
     return course_dir, name, root, root / "md", root / "docx", root / "manifest.json"
@@ -156,10 +161,20 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_setup(args) -> int:
+    print("\nOptional extras (the core pipeline needs none of these):\n")
+    for name, ok in setup_cmd.status().items():
+        print(f"  [{'x' if ok else ' '}] {name:<7} {setup_cmd.EXTRAS[name]['why']}")
+    print()
+    return setup_cmd.run(args.extra or None, dry_run=args.dry_run)
+
+
 def cmd_fetch(args) -> int:
     """Download transcripts only, without generating notes."""
     course_dir = ingest.resolve_input(
-        args.input or args.course, Path(args.input_dir).expanduser().resolve()
+        args.input or args.course,
+        Path(args.input_dir).expanduser().resolve(),
+        cdp_port=args.attach,
     )
     sections = discover(course_dir)
     lectures = flatten(sections)
@@ -258,6 +273,11 @@ def main(argv=None) -> int:
         p.add_argument("--output", default=str(DEFAULT_OUTPUT))
         p.add_argument("--input-dir", default=str(DEFAULT_INPUT),
                        help="where zips are extracted and URL fetches are saved")
+        p.add_argument(
+            "--attach", type=int, metavar="PORT", nargs="?", const=9222,
+            help="attach to a Chrome you started with --remote-debugging-port "
+                 "(default 9222). Use this if Cloudflare keeps challenging.",
+        )
         p.add_argument("--section", action="append", help="limit to section number(s), repeatable")
         p.add_argument("--only", help="glob over '<section-dir>/<lecture-file>'")
         if generating:
@@ -281,6 +301,12 @@ def main(argv=None) -> int:
             )
             p.add_argument("--no-whole-course", action="store_true",
                            help="skip the single combined all-sections file")
+
+    p = sub.add_parser("setup", help="install the optional extras (gdocs, udemy, api)")
+    p.add_argument("--extra", action="append", choices=list(setup_cmd.EXTRAS),
+                   help="install just one; default is all missing")
+    p.add_argument("--dry-run", action="store_true", help="print the commands only")
+    p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("discover", help="list the course tree and flag missing transcripts")
     common(p)

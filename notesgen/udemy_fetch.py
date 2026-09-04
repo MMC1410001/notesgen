@@ -20,7 +20,22 @@ from pathlib import Path
 
 from .vtt import vtt_to_text
 
-LOGIN_POLL_SECONDS = 2
+# Checking for login costs nothing now (cookies are read locally), but the
+# browser is left completely alone while a challenge is on screen.
+LOGIN_POLL_SECONDS = 3
+
+# Only `access_token` means authenticated. `dj_session_id` is set for
+# anonymous visitors too - treating it as a login signal makes the fetch march
+# on before the user is in, and every API call then 403s.
+SESSION_COOKIES = ("access_token",)
+
+# Cloudflare's interstitial. While this is up we make no requests at all -
+# polling an API every couple of seconds is itself bot-shaped traffic and
+# feeds the very check the user is trying to clear.
+CHALLENGE_MARKERS = (
+    "challenges.cloudflare.com", "cf-challenge", "just a moment",
+    "verify you are human", "checking your browser",
+)
 LOGIN_TIMEOUT_SECONDS = 600
 
 CURRICULUM = (
@@ -37,6 +52,30 @@ LECTURE = (
     "&fields[caption]=id,locale_id,url,source"
 )
 ME = "https://www.udemy.com/api-2.0/contexts/me/?header=True"
+SUBSCRIBED = (
+    "https://www.udemy.com/api-2.0/users/me/subscribed-courses/"
+    "?page_size=100&fields[course]=id,title,url"
+)
+LOGIN_URL = "https://www.udemy.com/join/login-popup/"
+
+# Playwright's bundled Chromium trips Cloudflare's bot check, which then loops
+# the "are you human?" challenge forever. Real Chrome with the automation
+# giveaways removed passes it.
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-default-browser-check",
+    "--no-first-run",
+]
+DROP_ARGS = ["--enable-automation", "--disable-extensions"]
+
+# navigator.webdriver is the single most-checked signal; the rest of these
+# round out a headed-Chrome fingerprint.
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+window.chrome = window.chrome || {runtime: {}};
+"""
 
 NO_TRANSCRIPT = "[No transcript available for this lecture]"
 HEADER = "Course: {course}\nChapter: {chapter}\nLecture: {lecture}\n" + "-" * 40 + "\n\n"
@@ -59,6 +98,39 @@ def _pick_caption(captions: list[dict]) -> str | None:
         if str(cap.get("locale_id", "")).lower().startswith("en"):
             return cap.get("url")
     return captions[0].get("url")
+
+
+def _slug(url: str) -> str | None:
+    m = re.search(r"/course/([^/?#]+)", url)
+    return m.group(1) if m else None
+
+
+def _course_id_from_api(page, url: str) -> int | None:
+    """Resolve the course by slug against the courses you are enrolled in.
+
+    Preferred over scraping the page: Udemy sends enrolled users to a
+    different layout than the sales page, so whichever DOM attribute carried
+    the id a moment ago may not be there after signing in.
+    """
+    slug = _slug(url)
+    if not slug:
+        return None
+
+    next_url = SUBSCRIBED
+    seen = 0
+    while next_url:
+        try:
+            payload = _api(page, next_url)
+        except FetchError:
+            return None
+        for course in payload.get("results", []):
+            seen += 1
+            if _slug(course.get("url") or "") == slug:
+                return int(course["id"])
+        next_url = payload.get("next")
+    if seen:
+        print(f"    checked {seen} enrolled course(s), no slug match for '{slug}'")
+    return None
 
 
 def _course_id(page) -> int:
@@ -87,46 +159,247 @@ def _course_id(page) -> int:
     if m:
         return int(m.group(1) or m.group(2))
 
+    m = re.search(r"/learn/lecture/(\d+)", page.url)
+    if m:
+        try:
+            detail = _api(
+                page,
+                "https://www.udemy.com/api-2.0/lectures/"
+                f"{m.group(1)}/?fields[lecture]=course",
+            )
+            course = detail.get("course") or {}
+            if course.get("id"):
+                return int(course["id"])
+        except FetchError:
+            pass
+
     raise FetchError(
         "could not determine the course id from the page. Make sure the URL "
         "points at a course you are enrolled in, and that it finished loading."
     )
 
 
+def _course_title(page) -> str:
+    for js in [
+        "document.querySelector('h1')?.textContent",
+        "document.title.split('|')[0]",
+    ]:
+        try:
+            value = page.evaluate(f"() => {js}")
+        except Exception:  # noqa: BLE001
+            continue
+        if value and value.strip():
+            return re.sub(r"\s+", " ", value).strip()
+    return ""
+
+
+# Requests must originate *inside* the page. Playwright's own HTTP client
+# shares cookies but not Chrome's TLS fingerprint or header order, so
+# Cloudflare answers it with a "Just a moment..." challenge and a 403. An
+# in-page fetch is the site's own XHR and passes cleanly - this is effectively
+# what the browser extension does, and why an extension was the right shape
+# for this job in the first place.
+IN_PAGE_FETCH = """async (u) => {
+  const r = await fetch(u, {
+    credentials: 'include',
+    headers: {'Accept': 'application/json, text/plain, */*'},
+  });
+  return {status: r.status, body: await r.text()};
+}"""
+
+
 def _api(page, url: str) -> dict:
-    response = page.request.get(url, headers={"Accept": "application/json, text/plain, */*"})
-    if not response.ok:
-        raise FetchError(f"{url.split('?')[0]} returned HTTP {response.status}")
-    return response.json()
+    try:
+        res = page.evaluate(IN_PAGE_FETCH, url)
+    except Exception as exc:  # noqa: BLE001 - page navigated mid-call
+        raise FetchError(f"request failed for {url.split('?')[0]}: {exc}") from exc
+
+    status, body = res.get("status"), res.get("body") or ""
+    if status == 403:
+        raise FetchError(
+            f"Udemy returned 403 for {url.split('?')[0]}\n"
+            "  The session is not authenticated for this course, or you are not\n"
+            "  enrolled in it. Check the browser is signed in to the right account."
+        )
+    if status != 200:
+        raise FetchError(f"{url.split('?')[0]} returned HTTP {status}")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise FetchError(
+            f"{url.split('?')[0]} did not return JSON "
+            f"(got {body[:80]!r})"
+        ) from exc
 
 
-def _wait_for_login(page) -> None:
+def _fetch_text(page, url: str) -> str | None:
+    """Download a caption file.
+
+    Captions live on S3, which is not behind Cloudflare, so Playwright's HTTP
+    client is fine here and avoids cross-origin reads from the page.
+    """
+    try:
+        response = page.request.get(url)
+        return response.text() if response.ok else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _logged_in(page) -> str | None:
+    """Return the signed-in user's display name, or None."""
+    try:
+        user = (_api(page, ME).get("header") or {}).get("user") or {}
+    except Exception:  # noqa: BLE001 - not signed in, or challenged
+        return None
+    if not user.get("id"):
+        return None
+    return user.get("display_name") or user.get("name") or "your account"
+
+
+def _has_session(context) -> bool:
+    """Login check that costs zero network requests - just reads cookies.
+
+    Reads every cookie and filters by name and domain rather than asking
+    Playwright to URL-match: `access_token` is set host-only on
+    www.udemy.com, and URL matching quietly missed it.
+    """
+    try:
+        cookies = context.cookies()
+    except Exception:  # noqa: BLE001
+        return False
+    for c in cookies:
+        if c.get("name") in SESSION_COOKIES and "udemy.com" in (c.get("domain") or ""):
+            return True
+    return False
+
+
+def _on_challenge(page) -> bool:
+    try:
+        blob = (page.url + " " + (page.title() or "")).lower()
+        if any(m in blob for m in CHALLENGE_MARKERS):
+            return True
+        return page.locator("iframe[src*='challenges.cloudflare.com']").count() > 0
+    except Exception:  # noqa: BLE001 - mid-navigation
+        return False
+
+
+def _wait_for_login(page, course_url: str) -> str:
+    """Block until the user signs in, then carry on by itself.
+
+    Waiting is done by reading cookies locally rather than calling the API,
+    and pauses entirely while a Cloudflare challenge is on screen, so nothing
+    this tool does can make that challenge harder to clear.
+    """
     import time
 
+    context = page.context
+    if _has_session(context):
+        who = _logged_in(page) or "you"
+        print(f"  already signed in as {who}")
+        return who
+
+    print("\n" + "=" * 68)
+    print("  SIGN IN TO UDEMY IN THE BROWSER WINDOW")
+    print("=" * 68)
+    print("  Log in however you normally do - password, Google, SSO, 2FA.")
+    print("  If Cloudflare asks you to confirm you are human, do that first;")
+    print("  this tool stays completely idle until you are through.")
+    print("  Nothing to type here: the download starts on its own.")
+    print(f"  (waiting up to {LOGIN_TIMEOUT_SECONDS // 60} minutes)\n")
+
     deadline = time.time() + LOGIN_TIMEOUT_SECONDS
-    announced = False
+    ticks = 0
+    announced_challenge = False
+
     while time.time() < deadline:
-        try:
-            me = _api(page, ME)
-            if (me.get("header") or {}).get("user", {}).get("id"):
-                return
-        except Exception:  # noqa: BLE001 - not logged in yet
-            pass
-        if not announced:
-            print("\n  Waiting for you to sign in to Udemy in the browser window...")
-            print("  (this tool never sees or stores your credentials)\n")
-            announced = True
+        if _on_challenge(page):
+            if not announced_challenge:
+                print("    Cloudflare check on screen - holding off, take your time")
+                announced_challenge = True
+            time.sleep(5)
+            continue
+
+        if announced_challenge:
+            print("    challenge cleared")
+            announced_challenge = False
+
+        if _has_session(context):
+            # The cookie is a cheap gate; the API is the authority. If it does
+            # not confirm a user, keep waiting rather than marching into 403s.
+            who = _logged_in(page)
+            if who:
+                print(f"\n  signed in as {who} - continuing automatically\n")
+                page.goto(course_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(2_000)
+                return who
+
+        ticks += 1
+        if ticks % 20 == 0:
+            left = int(deadline - time.time())
+            try:
+                n = len([c for c in context.cookies()
+                         if "udemy.com" in (c.get("domain") or "")])
+            except Exception:  # noqa: BLE001
+                n = -1
+            print(f"    still waiting... {left // 60}m {left % 60}s left "
+                  f"({n} udemy cookies, none of {'/'.join(SESSION_COOKIES)} yet)")
         time.sleep(LOGIN_POLL_SECONDS)
-    raise FetchError("timed out waiting for Udemy login")
+
+    raise FetchError(
+        "timed out waiting for Udemy login. Re-run and sign in; the browser "
+        "profile is kept, so once you're in it stays that way."
+    )
 
 
-def fetch(url: str, workdir: Path, *, headless: bool = False) -> Path:
+def _launch(pw, profile: Path, headless: bool, cdp_port: int | None):
+    """Return (context, close_fn).
+
+    Two ways in, most reliable last:
+      - real Chrome driven by us, automation signals stripped
+      - attach to a Chrome *you* started, which is indistinguishable from
+        normal browsing because it is normal browsing
+    """
+    if cdp_port:
+        browser = pw.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        return context, browser.close
+
+    for channel in ("chrome", None):  # real Chrome first, bundled as fallback
+        try:
+            context = pw.chromium.launch_persistent_context(
+                str(profile),
+                headless=headless,
+                channel=channel,
+                args=STEALTH_ARGS,
+                ignore_default_args=DROP_ARGS,
+                viewport={"width": 1400, "height": 900},
+            )
+            if channel:
+                print("  using your installed Google Chrome")
+            else:
+                # Bundled Chromium needs the fingerprint patch; real Chrome
+                # does not, and patching it is itself a detectable signal.
+                print("  using bundled Chromium (Cloudflare may challenge repeatedly)")
+                context.add_init_script(STEALTH_JS)
+            return context, context.close
+        except Exception as exc:  # noqa: BLE001 - Chrome not installed; try the next
+            last = exc
+    raise FetchError(f"could not start a browser: {last}")
+
+
+def fetch(
+    url: str,
+    workdir: Path,
+    *,
+    headless: bool = False,
+    cdp_port: int | None = None,
+) -> Path:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise FetchError(
             "fetching by URL needs Playwright:\n"
-            "    pip install playwright && playwright install chromium\n"
+            "    python3 -m notesgen setup --extra udemy\n"
             "Or download the transcripts with the Udemy Transcript Extractor "
             "extension and pass the .zip to --input instead."
         ) from exc
@@ -135,20 +408,23 @@ def fetch(url: str, workdir: Path, *, headless: bool = False) -> Path:
     profile.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
-        # A persistent profile means you log in once, not once per run.
-        context = pw.chromium.launch_persistent_context(str(profile), headless=headless)
+        context, close = _launch(pw, profile, headless, cdp_port)
         page = context.pages[0] if context.pages else context.new_page()
         try:
+            print("  opening browser...")
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            _wait_for_login(page)
-            course_id = _course_id(page)
-            print(f"  course id {course_id}")
+            _wait_for_login(page, url)
 
+            course_id = _course_id_from_api(page, url) or _course_id(page)
             items = _api(page, CURRICULUM.format(course_id=course_id)).get("results", [])
-            course = page.title().split(" | ")[0].strip() or f"course-{course_id}"
+            course = _course_title(page) or f"course-{course_id}"
+            lectures = sum(1 for i in items if i.get("_class") == "lecture")
+            print(f"  {course}")
+            print(f"  course id {course_id}, {lectures} lectures\n")
+
             root = _write_tree(page, course_id, course, items, workdir)
         finally:
-            context.close()
+            close()
 
     _zip(root, workdir / f"{root.name}-transcripts.zip")
     return root
@@ -219,14 +495,10 @@ def _lecture_text(page, course_id: int, item: dict) -> str | None:
     url = _pick_caption(captions or [])
     if not url:
         return None
-    try:
-        response = page.request.get(url)
-        if not response.ok:
-            return None
-        text = vtt_to_text(response.text())
-    except Exception:  # noqa: BLE001
+    raw = _fetch_text(page, url)
+    if not raw:
         return None
-    return text or None
+    return vtt_to_text(raw) or None
 
 
 def _write_combined(root: Path, course: str) -> None:

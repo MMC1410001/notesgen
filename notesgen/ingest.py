@@ -99,7 +99,7 @@ def extract_zip(archive: Path, dest_root: Path) -> Path:
     return descend_to_course(dest)
 
 
-def resolve_input(source: str, workdir: Path) -> Path:
+def resolve_input(source: str, workdir: Path, *, cdp_port: int | None = None) -> Path:
     """Return the course directory for a zip, folder, or Udemy URL."""
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +111,7 @@ def resolve_input(source: str, workdir: Path) -> Path:
             )
         from . import udemy_fetch  # imported lazily: needs playwright
 
-        return udemy_fetch.fetch(source, workdir)
+        return udemy_fetch.fetch(source, workdir, cdp_port=cdp_port)
 
     path = Path(source).expanduser()
     if not path.exists():
