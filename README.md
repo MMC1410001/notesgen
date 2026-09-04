@@ -224,7 +224,8 @@ output format has no bearing on cost.
 
 Everything lands under `output/<course name>/`. Each folder has a short
 `PASTE.md` or `UPLOAD.md` explaining what to do with it. `00 - Complete
-Course.*` holds the entire course in one file.
+Course.*` holds the entire course in one file, and `LINKS.md` holds your
+Google Docs links once you have published.
 
 **Do it all in one go:**
 
@@ -332,6 +333,18 @@ creates. It cannot see the rest of your Drive.
 When it finishes you get a link. Open it and use **View → Show outline** for
 the navigation pane.
 
+### Finding the link again
+
+You do not have to keep the terminal open. The link is saved and shown in
+several places:
+
+```bash
+python3 -m notesgen links -i "MyCourse-transcripts.zip"
+```
+
+It is also printed at the end of `discover` and `run`, and written to
+`output/<course>/LINKS.md` as a clickable file next to your notes.
+
 Re-running updates the same document instead of making duplicates, so any link
 you have shared keeps working. Add `--split-sections` for one document per
 section instead of one big one.
@@ -349,6 +362,7 @@ section instead of one big one.
 | `build` | Make `.docx` | free |
 | `export` | Make `.html`, `.txt`, `.md` | free |
 | `push` | Publish to Google Docs | free |
+| `links` | Show where a course's notes live | free |
 | `run` | Everything above, in order | — |
 | `setup` | Install optional extras | free |
 

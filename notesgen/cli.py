@@ -20,6 +20,7 @@ from . import export as export_mod
 from . import gdocs
 from . import generate as gen
 from . import ingest
+from . import links as links_mod
 from . import setup_cmd
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
 from .glossary import Glossary
@@ -62,7 +63,7 @@ def _paths(args):
 
 
 def cmd_discover(args) -> int:
-    course_dir, name, *_ = _paths(args)
+    course_dir, name, _root, _md, _docx, manifest_path = _paths(args)
     sections = _select(discover(course_dir), args.section, args.only)
     lectures = flatten(sections)
     missing = [l for l in lectures if l.status == STATUS_NO_TRANSCRIPT]
@@ -76,11 +77,17 @@ def cmd_discover(args) -> int:
 
     print(f"\n  {len(sections)} sections, {len(lectures)} lectures, "
           f"{sum(l.words for l in lectures):,} words")
+
+    if manifest_path.exists():
+        links_mod.show(links_mod.collect(Manifest(manifest_path)))
     if missing:
         print(f"\n  {len(missing)} lecture(s) without a usable transcript "
               f"(stubbed, never sent to the model):")
         for l in missing:
             print(f"    {l.slug}  ({l.words} words)")
+
+    if manifest_path.exists():
+        links_mod.show(links_mod.collect(Manifest(manifest_path)))
     return 0
 
 
@@ -183,6 +190,23 @@ def cmd_fetch(args) -> int:
     return 0
 
 
+def cmd_links(args) -> int:
+    """Print where this course's notes live."""
+    _course_dir, name, root, _md, _docx, manifest_path = _paths(args)
+    if not manifest_path.exists():
+        print(f"nothing generated yet for {name}", file=sys.stderr)
+        return 1
+
+    found = links_mod.collect(Manifest(manifest_path))
+    print(f"\n  {name}")
+    print(f"  files: {root}")
+    if found:
+        links_mod.show(found)
+    else:
+        print("\n  Not published to Google Docs yet - run `notesgen push`.")
+    return 0
+
+
 def cmd_export(args) -> int:
     course_dir, name, root, md_root, _, _ = _paths(args)
     if not md_root.exists():
@@ -239,6 +263,11 @@ def cmd_push(args) -> int:
             url = gdocs.push(combined, name, config_dir, manifest, folder_name=name)
             print(f"\n  {url}")
             print("  Navigate it with View > Show outline.")
+
+        found = links_mod.collect(manifest)
+        written = links_mod.write_file(root, name, found)
+        if written:
+            print(f"\n  Saved these links to {written}")
     except gdocs.GDocsError as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
@@ -253,7 +282,23 @@ def cmd_run(args) -> int:
         rc = cmd_diagram(args) or rc
     if not args.no_docx:
         rc = cmd_build(args) or rc
-    return cmd_export(args) or rc
+    rc = cmd_export(args) or rc
+
+    _course_dir, name, root, _md, _docx, manifest_path = _paths(args)
+    print("\n" + "=" * 60)
+    print(f"  {name}")
+    print("=" * 60)
+    print(f"  Everything is under {root}")
+    print("    html/        open in a browser, then copy into Word")
+    print("    docx/        drag into Google Drive")
+    print("    txt/         paste anywhere")
+    if manifest_path.exists():
+        found = links_mod.collect(Manifest(manifest_path))
+        if found:
+            links_mod.show(found)
+        else:
+            print("\n  Publish to Google Docs with:  python3 -m notesgen push")
+    return rc
 
 
 def main(argv=None) -> int:
@@ -332,6 +377,10 @@ def main(argv=None) -> int:
     )
     common(p)
     p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("links", help="show where this course's notes live")
+    common(p)
+    p.set_defaults(func=cmd_links)
 
     p = sub.add_parser("export", help="write notes as .html, .txt and .md (no model calls)")
     common(p, building=True, exporting=True)
