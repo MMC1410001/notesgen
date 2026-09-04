@@ -30,6 +30,10 @@ UPLOAD_RETRIES = 5
 GDOC_MIME = "application/vnd.google-apps.document"
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 HTML_MIME = "text/html"
+PDF_MIME = "application/pdf"
+
+# Drive refuses to export a Google-native file larger than this.
+EXPORT_LIMIT_MB = 10
 
 CREDENTIALS_HELP = """\
 Google Docs upload needs a one-time OAuth client:
@@ -109,6 +113,38 @@ def _folder(service, name: str) -> str:
         fields="id",
     ).execute()
     return created["id"]
+
+
+def export_pdf(doc_id: str, out_path: Path, config_dir: Path) -> Path:
+    """Download a Google Doc as PDF.
+
+    Exporting from the Doc rather than converting locally means the PDF is
+    laid out by Google exactly as the document reads, diagrams included, with
+    no LibreOffice or headless Word in the loop.
+    """
+    service = _service(config_dir)
+    from googleapiclient.http import MediaIoBaseDownload
+
+    try:
+        request = service.files().export_media(fileId=doc_id, mimeType=PDF_MIME)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _status, done = downloader.next_chunk(num_retries=UPLOAD_RETRIES)
+    except Exception as exc:  # noqa: BLE001
+        out_path.unlink(missing_ok=True)
+        if "exportSizeLimitExceeded" in str(exc):
+            raise GDocsError(
+                f"the document is too large for Drive to export as PDF "
+                f"(limit {EXPORT_LIMIT_MB} MB).\n"
+                "  Use --split-sections so each section is its own document, "
+                "then export those."
+            ) from exc
+        raise GDocsError(f"PDF export failed: {exc}") from exc
+
+    return out_path
 
 
 def push_file(

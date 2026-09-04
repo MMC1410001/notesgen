@@ -78,6 +78,10 @@ window.chrome = window.chrome || {runtime: {}};
 """
 
 NO_TRANSCRIPT = "[No transcript available for this lecture]"
+
+# Written beside a fetched course so later runs can recognise it and reuse it
+# instead of opening a browser again.
+SOURCE_MARKER = ".source"
 HEADER = "Course: {course}\nChapter: {chapter}\nLecture: {lecture}\n" + "-" * 40 + "\n\n"
 
 
@@ -441,6 +445,7 @@ def fetch(
         finally:
             close()
 
+    (root / SOURCE_MARKER).write_text(_slug(url) or url, encoding="utf-8")
     _zip(root, workdir / f"{root.name}-transcripts.zip")
     return root
 

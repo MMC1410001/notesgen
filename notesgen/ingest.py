@@ -99,7 +99,32 @@ def extract_zip(archive: Path, dest_root: Path) -> Path:
     return descend_to_course(dest)
 
 
-def resolve_input(source: str, workdir: Path, *, cdp_port: int | None = None) -> Path:
+def already_fetched(url: str, workdir: Path) -> Path | None:
+    """A previously downloaded copy of this course, if there is one.
+
+    Without this, a course URL in NOTESGEN_INPUT means every command -
+    including `discover` - opens a browser and re-downloads 183 lectures.
+    """
+    from .udemy_fetch import SOURCE_MARKER, _slug
+
+    slug = _slug(url)
+    if not slug or not workdir.is_dir():
+        return None
+    for marker in workdir.glob(f"*/{SOURCE_MARKER}"):
+        if marker.read_text(encoding="utf-8").strip() == slug:
+            course = marker.parent
+            if looks_like_course(course):
+                return course
+    return None
+
+
+def resolve_input(
+    source: str,
+    workdir: Path,
+    *,
+    cdp_port: int | None = None,
+    refetch: bool = False,
+) -> Path:
     """Return the course directory for a zip, folder, or Udemy URL."""
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -109,6 +134,12 @@ def resolve_input(source: str, workdir: Path, *, cdp_port: int | None = None) ->
                 f"{source} is not a Udemy course URL. "
                 "Expected https://www.udemy.com/course/..."
             )
+
+        if not refetch:
+            existing = already_fetched(source, workdir)
+            if existing is not None:
+                return existing
+
         from . import udemy_fetch  # imported lazily: needs playwright
 
         return udemy_fetch.fetch(source, workdir, cdp_port=cdp_port)

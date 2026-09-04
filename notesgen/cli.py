@@ -23,6 +23,7 @@ from . import generate as gen
 from . import ingest
 from . import links as links_mod
 from . import outputs as outputs_mod
+from . import pdf as pdf_mod
 from .providers import base as providers_base
 from . import setup_cmd
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
@@ -59,6 +60,7 @@ def _paths(args):
         source,
         Path(args.input_dir).expanduser().resolve(),
         cdp_port=getattr(args, "attach", None),
+        refetch=getattr(args, "refetch", False),
     )
     name = course_name(course_dir)
     root = Path(args.output).expanduser().resolve() / course_dir.name
@@ -185,6 +187,7 @@ def cmd_fetch(args) -> int:
         args.input or args.course,
         Path(args.input_dir).expanduser().resolve(),
         cdp_port=args.attach,
+        refetch=args.refetch,
     )
     sections = discover(course_dir)
     lectures = flatten(sections)
@@ -250,6 +253,18 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _whole_course_html(root: Path) -> Path | None:
+    """The single-file web page for the course, or the first section's."""
+    html_dir = root / "html"
+    if not html_dir.is_dir():
+        return None
+    combined = html_dir / "00 - Complete Course.html"
+    if combined.exists():
+        return combined
+    pages = sorted(html_dir.glob("*.html"))
+    return pages[0] if pages else None
+
+
 def cmd_push(args) -> int:
     course_dir, name, root, md_root, docx_root, manifest_path = _paths(args)
     if not md_root.exists():
@@ -265,11 +280,7 @@ def cmd_push(args) -> int:
 
     try:
         if "drive-html" in publish:
-            html_dir = root / "html"
-            page = html_dir / "00 - Complete Course.html"
-            if not page.exists():
-                pages = sorted(html_dir.glob("*.html")) if html_dir.is_dir() else []
-                page = pages[0] if pages else None
+            page = _whole_course_html(root)
             if page is None:
                 print("  no HTML to upload; run `export` first", file=sys.stderr)
             else:
@@ -280,6 +291,28 @@ def cmd_push(args) -> int:
                     folder_name=name, key=f"__gdoc__/{name} (web page)",
                 )
                 print(f"  {url}")
+
+        if "pdf" in publish:
+            page = _whole_course_html(root)
+            pdf_path = root / "pdf" / f"{name}.pdf"
+            if page is None:
+                print("  no HTML to render from; run `export` first", file=sys.stderr)
+            else:
+                print(f"\n  Rendering PDF from {page.name}...")
+                try:
+                    pdf_mod.from_html(page, pdf_path)
+                    print(f"  {pdf_path}  ({pdf_path.stat().st_size // 1024} KB)")
+                except pdf_mod.PdfError as exc:
+                    print(f"  {exc}", file=sys.stderr)
+                    pdf_path = None
+
+                if pdf_path and "drive-pdf" in publish:
+                    url = gdocs.push_file(
+                        pdf_path, f"{name} (PDF)", config_dir, manifest,
+                        mime=gdocs.PDF_MIME, convert=False,
+                        folder_name=name, key=f"__gdoc__/{name} (PDF)",
+                    )
+                    print(f"  {url}")
 
         if "gdoc" not in publish:
             found = links_mod.collect(manifest)
@@ -348,8 +381,9 @@ def cmd_run(args) -> int:
         args.format = export_formats
         rc = cmd_export(args) or rc
 
-    if "gdoc" in wanted or "drive-html" in wanted:
-        args.publish = [o for o in ("gdoc", "drive-html") if o in wanted]
+    drive_steps = [o for o in ("gdoc", "drive-html", "pdf", "drive-pdf") if o in wanted]
+    if drive_steps:
+        args.publish = drive_steps
         rc = cmd_push(args) or rc
 
     _course_dir, name, root, _md, _docx, manifest_path = _paths(args)
@@ -362,6 +396,7 @@ def cmd_run(args) -> int:
         ("docx", "Word documents"),
         ("txt", "plain text, pastes anywhere"),
         ("export-md", "Markdown per section"),
+        ("pdf", "PDF, exported from the Google Doc"),
     ):
         if (root / folder).is_dir():
             print(f"    {folder + '/':<12} {blurb}")
@@ -402,6 +437,10 @@ def main(argv=None) -> int:
             "--input-dir",
             default=os.environ.get("NOTESGEN_INPUT_DIR") or str(DEFAULT_INPUT),
             help="where zips are extracted and URL fetches are saved",
+        )
+        p.add_argument(
+            "--refetch", action="store_true",
+            help="re-download from Udemy even if this course was fetched before",
         )
         p.add_argument(
             "--attach", type=int, metavar="PORT", nargs="?", const=9222,
@@ -478,9 +517,11 @@ def main(argv=None) -> int:
     p = sub.add_parser("push", help="upload the notes to Google Drive")
     common(p, building=True)
     p.add_argument(
-        "--publish", action="append", choices=["gdoc", "drive-html"],
-        help="gdoc = a Google Doc (default); drive-html = the web page, "
-             "shareable by link. Repeatable.",
+        "--publish", action="append",
+        choices=["gdoc", "drive-html", "pdf", "drive-pdf"],
+        help="gdoc = a Google Doc (default); drive-html = the web page; "
+             "pdf = export the Doc as PDF; drive-pdf = that PDF on Drive. "
+             "Repeatable.",
     )
     p.add_argument("--split-sections", action="store_true",
                    help="one Doc per section instead of one for the whole course")

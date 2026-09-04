@@ -130,6 +130,8 @@ Not everyone wants all of it. Set `NOTESGEN_OUTPUTS`, or pass `--outputs`:
 | Only Markdown | `md` |
 | Only plain text | `txt` |
 | Only Word files | `docx` |
+| Only a PDF | `pdf` |
+| PDF on Drive too | `drive-pdf` |
 | Everything local, nothing uploaded | leave unset |
 
 ```bash
@@ -149,8 +151,10 @@ added for you — asking for `gdoc` builds the `.docx` it needs first.
 | `txt` | plain text |
 | `md` | one Markdown file per section |
 | `docx` | Word documents |
+| `pdf` | a PDF, rendered from the web page |
 | `gdoc` | a Google Doc in your Drive |
 | `drive-html` | the web page on Drive, shareable by link |
+| `drive-pdf` | the PDF on Drive, shareable by link |
 
 | Variable | Sets |
 |---|---|
@@ -255,6 +259,10 @@ done
 
 If you set `NOTESGEN_INPUT` in `.env` it applies when you pass no `-i`; passing
 `-i` overrides it for that run.
+
+A course URL is downloaded **once**. Later commands reuse what is already in
+`input/`, so `discover` and `export` do not reopen a browser. Force a fresh
+download with `--refetch`.
 
 To see everything you have processed, with each course's Google Doc:
 
@@ -487,6 +495,26 @@ Re-running updates the same document instead of making duplicates, so any link
 you have shared keeps working. Add `--split-sections` for one document per
 section instead of one big one.
 
+### PDF
+
+```bash
+python3 -m notesgen run --outputs pdf          # local PDF
+python3 -m notesgen run --outputs drive-pdf    # and on Drive, shareable
+```
+
+The PDF is printed from the exported web page by headless Chrome, so the
+diagrams come through as images and the layout matches what you see in a
+browser. The navigation sidebar is dropped for print.
+
+It is **not** exported from the Google Doc, which was the obvious route but a
+dead end: Drive refuses to export any Google-native file over 10 MB, and a
+full course is well past that. Rendering from HTML has no such ceiling and
+does not require publishing anything first — a 917-page, 8 MB PDF of the
+reference course takes about 15 seconds.
+
+Needs a browser: `python3 -m notesgen setup --extra udemy` (shared with the
+Udemy fetch).
+
 ### The web page on Drive
 
 ```bash
@@ -537,6 +565,7 @@ Useful flags:
 | `--no-diagrams`, `--no-docx`, `--no-images` | skip steps |
 | `--split-sections` | one Google Doc per section |
 | `--attach [PORT]` | drive a Chrome you launched yourself |
+| `--refetch` | re-download from Udemy instead of reusing the last download |
 
 ---
 

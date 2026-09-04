@@ -16,6 +16,8 @@ CHOICES: dict[str, str] = {
     "docx": "Word documents",
     "gdoc": "a Google Doc in your Drive",
     "drive-html": "the web page uploaded to Drive, shareable by link",
+    "pdf": "a PDF, rendered from the web page so diagrams come through",
+    "drive-pdf": "that PDF on Drive, shareable by link",
 }
 
 ALL = tuple(CHOICES)
@@ -23,6 +25,7 @@ DEFAULT = ("notes", "diagrams", "html", "txt", "md", "docx")
 
 ALIASES = {
     "all": ALL,
+    "pdfs": ("notes", "diagrams", "html", "pdf"),
     "everything": ALL,
     "google": ("notes", "diagrams", "docx", "gdoc"),
     "gdocs": ("notes", "diagrams", "docx", "gdoc"),
@@ -67,6 +70,11 @@ def parse(value: str | list[str] | None) -> tuple[str, ...]:
     if "gdoc" in wanted and "docx" not in wanted:
         wanted.append("docx")
     if "drive-html" in wanted and "html" not in wanted:
+        wanted.append("html")
+    # A PDF is exported from the Google Doc, so that has to exist first.
+    if "drive-pdf" in wanted and "pdf" not in wanted:
+        wanted.append("pdf")
+    if "pdf" in wanted and "html" not in wanted:
         wanted.append("html")
     if "notes" not in wanted:
         wanted.insert(0, "notes")
