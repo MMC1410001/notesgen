@@ -17,6 +17,16 @@ import json
 from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+# A whole-course document runs to a couple of MB with diagrams embedded.
+# httplib2's default socket timeout is short enough that one slow leg kills
+# the transfer, hence the generous timeout and retries.
+#
+# Deliberately NOT a resumable upload: at this size it buys nothing, and
+# httplib2 mishandles the 308 "Resume Incomplete" that chunked uploads reply
+# with, failing as RedirectMissingLocation.
+UPLOAD_TIMEOUT = 600
+UPLOAD_RETRIES = 5
 GDOC_MIME = "application/vnd.google-apps.document"
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -74,7 +84,13 @@ def _service(config_dir: Path):
         token_file.write_text(creds.to_json(), encoding="utf-8")
         token_file.chmod(0o600)
 
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    import google_auth_httplib2
+    import httplib2
+
+    http = google_auth_httplib2.AuthorizedHttp(
+        creds, http=httplib2.Http(timeout=UPLOAD_TIMEOUT)
+    )
+    return build("drive", "v3", http=http, cache_discovery=False)
 
 
 def _folder(service, name: str) -> str:
@@ -112,14 +128,16 @@ def push(
     key = key or f"__gdoc__/{title}"
     existing = manifest.entries.get(key, {}).get("doc_id")
 
-    media = MediaFileUpload(str(docx_path), mimetype=DOCX_MIME, resumable=True)
+    media = MediaFileUpload(str(docx_path), mimetype=DOCX_MIME, resumable=False)
 
     if existing:
         try:
             service.files().get(fileId=existing, fields="id").execute()
             # Re-uploading media to the same file id keeps the URL stable, so
             # links already shared keep working.
-            service.files().update(fileId=existing, media_body=media).execute()
+            service.files().update(
+                fileId=existing, media_body=media
+            ).execute(num_retries=UPLOAD_RETRIES)
             manifest.record(key, hash="", output=str(docx_path), doc_id=existing,
                             status="ok", url=_url(existing))
             return _url(existing)
@@ -130,7 +148,9 @@ def push(
     if folder_name:
         body["parents"] = [_folder(service, folder_name)]
 
-    created = service.files().create(body=body, media_body=media, fields="id").execute()
+    created = service.files().create(
+        body=body, media_body=media, fields="id"
+    ).execute(num_retries=UPLOAD_RETRIES)
     doc_id = created["id"]
     manifest.record(key, hash="", output=str(docx_path), doc_id=doc_id,
                     status="ok", url=_url(doc_id))

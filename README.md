@@ -123,6 +123,12 @@ conversion to a native Google Doc. Heading styles become the Docs outline
 (**View → Show outline**) and the diagram images come along inside the file.
 `--split-sections` uploads one Doc per section into a Drive folder instead.
 
+If your OAuth app is in **Testing** mode, add your own address under
+**APIs & Services → OAuth consent screen → Test users** first, or Google
+rejects the sign-in with `403: access_denied` before showing a consent
+screen. You will also see an "unverified app" warning — that is expected for
+your own unpublished client.
+
 First run prints instructions for creating a one-time OAuth desktop client;
 the token is cached in `.gdocs/` (gitignored) so later runs are silent. The
 scope requested is `drive.file`, which only grants access to files this tool
