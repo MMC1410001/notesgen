@@ -36,12 +36,19 @@ pre code{background:none;padding:0;font-size:.88em;line-height:1.5}
 table{border-collapse:collapse;margin:.9em 0;font-size:.95em}
 th,td{border:1px solid #d8dde3;padding:.4em .7em;text-align:left;vertical-align:top}
 th{background:#f2f3f5;font-weight:600}
+pre.mermaid{background:#fff;border:1px solid #e2e5e9;text-align:center;padding:1.2em}
 blockquote{margin:.9em 0;padding:.7em 1em;background:#fff8e5;
            border-left:4px solid #e0a800;color:#6a4b00}
 blockquote p{margin:.2em 0}
 .subtitle{color:#667085;font-style:italic;margin:-.4em 0 2em}
 .doc+.doc{margin-top:3.5em;padding-top:2em;border-top:3px double #d8dde3}
 """
+
+MERMAID_SCRIPT = (
+    '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js">'
+    "</script>\n<script>mermaid.initialize({startOnLoad:true,theme:'neutral',"
+    "flowchart:{htmlLabels:false}});</script>\n"
+)
 
 PASTE_NOTE = {
     "html": """\
@@ -124,7 +131,9 @@ def _blocks_html(markdown: str, level_map) -> str:
             continue
 
         close_list()
-        if b.kind == "table":
+        if b.kind == "mermaid":
+            out.append(f'<pre class="mermaid">{_html.escape(b.source)}</pre>')
+        elif b.kind == "table":
             head, *body = b.rows or [[]]
             cells = "".join(f"<th>{_inline_html(c)}</th>" for c in head)
             rows = "".join(
@@ -154,11 +163,15 @@ def render_html(doc: Doc) -> str:
     body = "\n".join(
         f'<div class="doc">{_blocks_html(part, level_map)}</div>' for part in doc.parts
     )
+    # Only pull in mermaid.js when the document actually has a diagram, so
+    # pages without one stay offline-usable.
+    script = MERMAID_SCRIPT if 'class="mermaid"' in body else ""
     return (
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n"
         f"<title>{_html.escape(doc.title)}</title>\n<style>\n{CSS}</style>\n"
         f"</head><body>\n<h1>{_html.escape(doc.title)}</h1>\n"
-        f'<p class="subtitle">{_html.escape(doc.subtitle)}</p>\n{body}\n</body></html>\n'
+        f'<p class="subtitle">{_html.escape(doc.subtitle)}</p>\n{body}\n'
+        f"{script}</body></html>\n"
     )
 
 
@@ -190,6 +203,12 @@ def render_txt(doc: Doc) -> str:
                 out.append(f"{'  ' * b.level}  - {strip_inline(b.text)}")
             elif b.kind == "number":
                 out.append(f"{'  ' * b.level}  {strip_inline(b.text)}")
+            elif b.kind == "mermaid":
+                # Plain text cannot draw; show the source, which is readable
+                # and can be pasted into any Mermaid renderer.
+                out += ["", "  [diagram - paste into mermaid.live to view]", ""]
+                out += [f"    {line}" for line in (b.lines or [])]
+                out.append("")
             elif b.kind == "table":
                 rows = [[strip_inline(c) for c in r] for r in (b.rows or [])]
                 widths = [

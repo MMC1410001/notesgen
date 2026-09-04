@@ -14,8 +14,10 @@ import sys
 from pathlib import Path
 
 from . import build as build_mod
+from . import diagrams as diagrams_mod
 from . import engine
 from . import export as export_mod
+from . import gdocs
 from . import generate as gen
 from . import ingest
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
@@ -114,13 +116,39 @@ def cmd_generate(args) -> int:
     return 0
 
 
+def cmd_diagram(args) -> int:
+    course_dir, name, root, md_root, _, manifest_path = _paths(args)
+    if not md_root.exists():
+        print(f"no generated notes at {md_root}; run `generate` first", file=sys.stderr)
+        return 1
+    sections = _select(discover(course_dir), args.section, args.only)
+    manifest = Manifest(manifest_path)
+
+    print(f"\nGenerating diagrams for {name}")
+    if not diagrams_mod.renderer_available():
+        print("  note: no mermaid renderer found. Diagrams will render live in")
+        print("  the HTML, but .docx will show their source instead.")
+        print("  Fix with: npm install -g @mermaid-js/mermaid-cli\n")
+
+    stats = diagrams_mod.generate(
+        name, sections, md_root, manifest,
+        model=args.model, workers=args.workers, force=args.force,
+    )
+    print(f"\n  diagrams: {stats}")
+    return 1 if stats.get("failed") else 0
+
+
 def cmd_build(args) -> int:
     course_dir, name, _, md_root, docx_root, _ = _paths(args)
     if not md_root.exists():
         print(f"no generated notes at {md_root}; run `generate` first", file=sys.stderr)
         return 1
     sections = _select(discover(course_dir), args.section, args.only)
-    written = build_mod.build(name, sections, md_root, docx_root, max_words=args.max_words)
+    written = build_mod.build(
+        name, sections, md_root, docx_root,
+        max_words=args.max_words,
+        image_cache=None if args.no_images else root / "diagram-images",
+    )
     print(f"\n  {len(written)} document(s) in {docx_root}")
     for p in written:
         print(f"    {p.name}")
@@ -161,10 +189,53 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_push(args) -> int:
+    course_dir, name, root, md_root, docx_root, manifest_path = _paths(args)
+    if not md_root.exists():
+        print(f"no generated notes at {md_root}; run `generate` first", file=sys.stderr)
+        return 1
+    sections = _select(discover(course_dir), args.section, args.only)
+    manifest = Manifest(manifest_path)
+    config_dir = Path(args.config_dir).expanduser()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    image_cache = None if args.no_images else root / "diagram-images"
+
+    try:
+        if args.split_sections:
+            print(f"\nPushing {len(sections)} section documents to Google Docs")
+            urls = []
+            for doc in build_mod.collect(name, sections, md_root, max_words=args.max_words):
+                path = docx_root / (doc.basename + ".docx")
+                if not path.exists():
+                    path = build_mod.build_section_doc(
+                        doc.title, doc.subtitle, doc.parts, path, image_cache
+                    )
+                url = gdocs.push(path, f"{name} - {doc.title}", config_dir, manifest,
+                                 folder_name=name, key=f"__gdoc__/{doc.basename}")
+                print(f"  {doc.basename}\n    {url}")
+                urls.append(url)
+            print(f"\n  {len(urls)} document(s) in your Drive folder '{name}'")
+        else:
+            print(f"\nBuilding one document for the whole course...")
+            combined = root / "gdocs" / f"{name}.docx"
+            combined.parent.mkdir(parents=True, exist_ok=True)
+            build_mod.build_single(name, sections, md_root, combined, image_cache=image_cache)
+            print(f"  {combined.stat().st_size // 1024} KB, uploading...")
+            url = gdocs.push(combined, name, config_dir, manifest, folder_name=name)
+            print(f"\n  {url}")
+            print("  Navigate it with View > Show outline.")
+    except gdocs.GDocsError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_run(args) -> int:
     rc = cmd_generate(args)
     if rc and not args.keep_going:
         return rc
+    if not args.no_diagrams:
+        rc = cmd_diagram(args) or rc
     if not args.no_docx:
         rc = cmd_build(args) or rc
     return cmd_export(args) or rc
@@ -201,6 +272,8 @@ def main(argv=None) -> int:
             p.add_argument("--no-rollup", action="store_true")
         if building:
             p.add_argument("--max-words", type=int, default=build_mod.MAX_WORDS_PER_DOC)
+            p.add_argument("--no-images", action="store_true",
+                           help="skip rendering diagrams into .docx")
         if exporting:
             p.add_argument(
                 "--format", action="append", choices=list(export_mod.FORMATS),
@@ -217,6 +290,12 @@ def main(argv=None) -> int:
     common(p, generating=True)
     p.set_defaults(func=cmd_generate)
 
+    p = sub.add_parser(
+        "diagram", help="generate Mermaid diagrams per section from existing notes"
+    )
+    common(p, generating=True)
+    p.set_defaults(func=cmd_diagram)
+
     p = sub.add_parser("build", help="assemble .docx from generated Markdown")
     common(p, building=True)
     p.set_defaults(func=cmd_build)
@@ -232,10 +311,19 @@ def main(argv=None) -> int:
     common(p, building=True, exporting=True)
     p.set_defaults(func=cmd_export)
 
+    p = sub.add_parser("push", help="upload the notes to Google Docs")
+    common(p, building=True)
+    p.add_argument("--split-sections", action="store_true",
+                   help="one Doc per section instead of one for the whole course")
+    p.add_argument("--config-dir", default=str(PROJECT_ROOT / ".gdocs"),
+                   help="where the OAuth client and cached token live")
+    p.set_defaults(func=cmd_push)
+
     p = sub.add_parser("run", help="generate, then build and export every format")
     common(p, generating=True, building=True, exporting=True)
     p.add_argument("--keep-going", action="store_true", help="build even if some lectures failed")
     p.add_argument("--no-docx", action="store_true", help="skip the .docx step")
+    p.add_argument("--no-diagrams", action="store_true", help="skip diagram generation")
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

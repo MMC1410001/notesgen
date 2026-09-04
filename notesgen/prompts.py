@@ -207,3 +207,67 @@ _Unavailable - no transcript._
 
 _Unavailable - no transcript._
 """
+
+
+DIAGRAM_TEMPLATE = """\
+{grounding}
+COURSE: {course}
+SECTION: {section_idx} - {section_title}
+
+Below are the notes already generated for this section. Produce 1-3 Mermaid
+diagrams that make this section's material easier to understand at a glance.
+
+WHAT TO DRAW - in priority order, only where the notes actually support it:
+1. **System / architecture structure** - the components involved and how they
+   connect (`flowchart LR` or `flowchart TB`).
+2. **Control or data flow** - the path a request, message, or piece of state
+   takes through the system (`flowchart TB`, or `sequenceDiagram` when the
+   order of interactions between parties is the point).
+3. **State transitions** - when the section is genuinely about states and the
+   events that move between them (`stateDiagram-v2`).
+
+DO NOT produce:
+- Mind maps, word clouds, or "concept" bubbles restating the heading list.
+- A diagram of the course structure, the lecture order, or the learning path.
+- Decorative diagrams that carry no information the notes don't already state
+  plainly in one sentence.
+
+If the section is pure setup, installation, or admin with no system or flow to
+draw, output exactly `_No diagram adds anything to this section._` and nothing
+else. A missing diagram is better than a useless one.
+
+RULES FOR THE MERMAID ITSELF - a diagram that does not render is worse than
+no diagram:
+- Start each block with a valid type line: `flowchart LR`, `flowchart TB`,
+  `sequenceDiagram`, or `stateDiagram-v2`.
+- Node ids must be simple alphanumerics (`nodeA`, `step1`). Put all punctuation
+  inside the quoted label: `nodeA["ChatOpenAI (paid)"]`.
+- Quote every label containing a space, bracket, comma, or symbol.
+- No HTML, no `<br>`, no CSS, no `style`/`classDef` lines, no emoji.
+- Keep it to at most 12 nodes. A diagram too dense to read teaches nothing.
+
+FORMAT - for each diagram, exactly this, and nothing else:
+
+#### <short title naming what is drawn>
+
+```mermaid
+<the diagram>
+```
+
+<one sentence saying what the diagram shows>
+
+SECTION NOTES:
+---
+{notes}
+---
+"""
+
+
+def diagram_prompt(course, section, notes):
+    return DIAGRAM_TEMPLATE.format(
+        grounding=GROUNDING,
+        course=course,
+        section_idx=section.idx,
+        section_title=section.title,
+        notes=notes,
+    )

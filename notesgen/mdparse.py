@@ -40,7 +40,9 @@ INLINE = re.compile(
 # than letting an honest "this was not captured" note read as body text.
 CALLOUT = "[!]"
 
-BlockKind = Literal["heading", "code", "bullet", "number", "quote", "para", "table"]
+BlockKind = Literal[
+    "heading", "code", "bullet", "number", "quote", "para", "table", "mermaid"
+]
 InlineKind = Literal["text", "bold", "italic", "code", "boldcode"]
 
 
@@ -56,6 +58,10 @@ class Block:
     @property
     def is_callout(self) -> bool:
         return CALLOUT in self.text
+
+    @property
+    def source(self) -> str:
+        return "\n".join(self.lines or [])
 
 
 def normalise_heading_levels(lines: list[str]) -> dict[int, int]:
@@ -90,7 +96,11 @@ def parse_blocks(markdown: str, level_map: dict[int, int] | None = None) -> Iter
                 body.append(lines[i])
                 i += 1
             i += 1  # closing fence
-            yield Block(kind="code", lang=fence.group(1), lines=body)
+            lang = fence.group(1)
+            # Mermaid gets its own kind so renderers can draw it rather than
+            # print its source: live in HTML, a rendered PNG in .docx.
+            kind = "mermaid" if lang.lower() == "mermaid" else "code"
+            yield Block(kind=kind, lang=lang, lines=body)
             continue
 
         if not line.strip() or RULE.match(line):

@@ -47,13 +47,19 @@ python3 -m notesgen fetch -i "<zip | folder | url>"
 # Generate Markdown notes (per lecture + per section + a course index)
 python3 -m notesgen generate -i "<zip | folder | url>"
 
+# Add Mermaid diagrams per section (reads existing notes; ~27 calls)
+python3 -m notesgen diagram -i "<zip | folder | url>"
+
 # Assemble .docx from the Markdown
 python3 -m notesgen build -i "<zip | folder | url>"
 
 # Write .html / .txt / .md for copy-pasting (no model calls)
 python3 -m notesgen export -i "<zip | folder | url>"
 
-# Everything: generate, then build .docx and export every format
+# Upload to Google Docs
+python3 -m notesgen push -i "<zip | folder | url>"
+
+# Everything: generate, diagram, build .docx, export every format
 python3 -m notesgen run -i "<zip | folder | url>"
 ```
 
@@ -79,6 +85,53 @@ variable to set, rather than failing 183 lectures one at a time.
 
 API providers need their SDK: `pip install anthropic` / `openai` /
 `google-genai`. Only the one you use.
+
+## Diagrams
+
+`notesgen diagram` adds system-structure, control-flow and state diagrams to
+each section — the AI writes them as **Mermaid**, so labels and arrows are
+correct rather than the smeared text a diffusion image model produces on
+technical material. The prompt explicitly rejects mind maps, concept bubbles
+and course-structure diagrams; a section with nothing worth drawing says so
+instead of padding.
+
+It reads the **notes that already exist**, not the transcripts, so adding
+diagrams to a finished course costs ~27 calls rather than regenerating every
+lecture. Output goes to its own `_diagrams.md` per section, so nothing already
+generated is rewritten.
+
+| Format | How diagrams appear |
+|---|---|
+| `html/` | rendered live by mermaid.js; pastes into Word as a picture |
+| `docx/` | rendered to PNG and embedded |
+| `txt/`, `export-md/` | diagram source (GitHub and Obsidian render it natively) |
+
+`.docx` embedding needs a renderer: `npm install -g @mermaid-js/mermaid-cli`,
+or let `npx` fetch it on first run. Without one the `.docx` shows the diagram
+source and says so — it never fails the build. Rendered PNGs are cached by
+content hash, so rebuilding is instant.
+
+## Google Docs
+
+```bash
+pip install google-api-python-client google-auth-oauthlib
+python3 -m notesgen push -i "<zip | folder | url>"
+```
+
+Builds one `.docx` for the whole course and uploads it to Drive asking for
+conversion to a native Google Doc. Heading styles become the Docs outline
+(**View → Show outline**) and the diagram images come along inside the file.
+`--split-sections` uploads one Doc per section into a Drive folder instead.
+
+First run prints instructions for creating a one-time OAuth desktop client;
+the token is cached in `.gdocs/` (gitignored) so later runs are silent. The
+scope requested is `drive.file`, which only grants access to files this tool
+itself creates — it cannot see the rest of your Drive. Re-running updates the
+same document rather than creating duplicates, so a shared link keeps working.
+
+**On tabs:** the Docs API cannot create them. Both it and Apps Script expose
+only `getTab` / `getTabs` / `getActiveTab` / `setActiveTab` — there is no
+`addTab` in either — so navigation is the heading outline, not tabs.
 
 ## Fetching by URL
 

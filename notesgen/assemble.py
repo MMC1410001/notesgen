@@ -74,12 +74,22 @@ def strip_leading_h1(text: str, title: str) -> str:
     return text
 
 
+def diagrams_path(md_root: Path, section: Section) -> Path:
+    return md_root / f"{section.idx}-{safe_name(section.title)}" / "_diagrams.md"
+
+
 def section_parts(md_root: Path, section: Section) -> list[str]:
-    """A section's overview followed by each of its lectures, in order."""
+    """Overview, then diagrams, then each lecture in order."""
     parts: list[str] = []
     overview = rollup_path(md_root, section)
     if overview.exists():
         parts.append(overview.read_text(encoding="utf-8"))
+
+    # Diagrams live in their own file so generating them never rewrites notes
+    # that have already been paid for.
+    diagrams = diagrams_path(md_root, section)
+    if diagrams.exists():
+        parts.append(diagrams.read_text(encoding="utf-8"))
     for lec in section.lectures:
         p = md_path(md_root, lec)
         if p.exists():

@@ -14,7 +14,8 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH as _ALIGN
+from docx.shared import Inches, Pt, RGBColor
 
 from .mdparse import normalise_heading_levels, parse_blocks, parse_inline
 
@@ -62,9 +63,15 @@ def _add_code_block(doc, code_lines: list[str]) -> None:
         _shade(p, CODE_SHADE)
 
 
-def render_markdown(doc, markdown: str, level_map: dict[int, int] | None = None) -> None:
+def render_markdown(
+    doc, markdown: str, level_map: dict[int, int] | None = None,
+    image_cache: "Path | None" = None,
+) -> None:
     for b in parse_blocks(markdown, level_map):
-        if b.kind == "code":
+        if b.kind == "mermaid":
+            _add_diagram(doc, b.source, image_cache)
+
+        elif b.kind == "code":
             _add_code_block(doc, b.lines or [])
             doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
@@ -105,6 +112,34 @@ def render_markdown(doc, markdown: str, level_map: dict[int, int] | None = None)
             _add_inline(doc.add_paragraph(), b.text)
 
 
+def _add_diagram(doc, source: str, image_cache) -> None:
+    """Insert a rendered diagram, or its source when no renderer is installed."""
+    png = None
+    if image_cache is not None:
+        from .diagrams import render_png
+
+        png = render_png(source, image_cache)
+
+    if png is not None:
+        p = doc.add_paragraph()
+        p.alignment = _ALIGN.CENTER
+        # 6" fits the default page with margins; python-docx scales height.
+        p.add_run().add_picture(str(png), width=Inches(6.0))
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+        return
+
+    note = doc.add_paragraph()
+    run = note.add_run(
+        "[diagram - install mermaid-cli (npx @mermaid-js/mermaid-cli) to render, "
+        "or paste the source below into mermaid.live]"
+    )
+    run.italic = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = QUOTE_COLOR
+    _add_code_block(doc, source.splitlines())
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+
 def _style_or_default(doc, wanted: str, fallback: str) -> str:
     try:
         doc.styles[wanted]
@@ -134,6 +169,7 @@ def build_section_doc(
     subtitle: str,
     parts: list[str],
     out_path: Path,
+    image_cache: Path | None = None,
 ) -> Path:
     """Assemble one .docx from a list of Markdown documents."""
     combined = "\n\n".join(parts)
@@ -143,7 +179,7 @@ def build_section_doc(
     for n, part in enumerate(parts):
         if n:
             doc.add_page_break()
-        render_markdown(doc, part, level_map)
+        render_markdown(doc, part, level_map, image_cache)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))

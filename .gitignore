@@ -2,8 +2,9 @@
 # not be published — see README. Keep them local.
 output/
 
-# Credentials
+# Credentials — the OAuth client and cached Google token live here
 .env
+.gdocs/
 
 # Extracted zips, fetched transcripts, and the browser profile used for login
 input/
