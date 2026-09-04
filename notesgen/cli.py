@@ -14,13 +14,17 @@ import sys
 from pathlib import Path
 
 from . import build as build_mod
+from . import engine
 from . import export as export_mod
 from . import generate as gen
+from . import ingest
 from .discover import STATUS_NO_TRANSCRIPT, course_name, discover, flatten
 from .glossary import Glossary
 from .manifest import Manifest
 
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "output"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT = PROJECT_ROOT / "output"
+DEFAULT_INPUT = PROJECT_ROOT / "input"
 
 
 def _select(sections, section_filter, only):
@@ -39,7 +43,12 @@ def _select(sections, section_filter, only):
 
 
 def _paths(args):
-    course_dir = Path(args.course).expanduser().resolve()
+    """Resolve the input (zip, folder or URL) into a course directory."""
+    source = getattr(args, "input", None) or getattr(args, "course", None)
+    if not source:
+        raise SystemExit("--input is required (a .zip, a folder, or a Udemy course URL)")
+
+    course_dir = ingest.resolve_input(source, Path(args.input_dir).expanduser().resolve())
     name = course_name(course_dir)
     root = Path(args.output).expanduser().resolve() / course_dir.name
     return course_dir, name, root, root / "md", root / "docx", root / "manifest.json"
@@ -119,6 +128,18 @@ def cmd_build(args) -> int:
     return 0
 
 
+def cmd_fetch(args) -> int:
+    """Download transcripts only, without generating notes."""
+    course_dir = ingest.resolve_input(
+        args.input or args.course, Path(args.input_dir).expanduser().resolve()
+    )
+    sections = discover(course_dir)
+    lectures = flatten(sections)
+    print(f"\n  {course_name(course_dir)}")
+    print(f"  {len(sections)} sections, {len(lectures)} lectures -> {course_dir}")
+    return 0
+
+
 def cmd_export(args) -> int:
     course_dir, name, root, md_root, _, _ = _paths(args)
     if not md_root.exists():
@@ -157,11 +178,22 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(p, *, generating=False, building=False, exporting=False):
-        p.add_argument("--course", required=True, help="path to the course transcript folder")
+        p.add_argument(
+            "--input", "-i",
+            help="a .zip from the Udemy Transcript Extractor, an extracted "
+                 "folder, or a Udemy course URL",
+        )
+        p.add_argument("--course", help=argparse.SUPPRESS)  # old name, still works
         p.add_argument("--output", default=str(DEFAULT_OUTPUT))
+        p.add_argument("--input-dir", default=str(DEFAULT_INPUT),
+                       help="where zips are extracted and URL fetches are saved")
         p.add_argument("--section", action="append", help="limit to section number(s), repeatable")
         p.add_argument("--only", help="glob over '<section-dir>/<lecture-file>'")
         if generating:
+            p.add_argument(
+                "--provider", choices=["claude-cli", "anthropic", "openai", "gemini"],
+                help="default: claude CLI if installed, else whichever API key is set",
+            )
             p.add_argument("--model", default="sonnet")
             p.add_argument("--workers", type=int, default=3)
             p.add_argument("--glossary", help="override glossary.yml")
@@ -189,6 +221,13 @@ def main(argv=None) -> int:
     common(p, building=True)
     p.set_defaults(func=cmd_build)
 
+    p = sub.add_parser(
+        "fetch",
+        help="download transcripts from a Udemy URL (or unpack a zip) and stop",
+    )
+    common(p)
+    p.set_defaults(func=cmd_fetch)
+
     p = sub.add_parser("export", help="write notes as .html, .txt and .md (no model calls)")
     common(p, building=True, exporting=True)
     p.set_defaults(func=cmd_export)
@@ -200,7 +239,18 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    engine.configure(
+        provider=getattr(args, "provider", None),
+        model=getattr(args, "model", None),
+    )
+    try:
+        return args.func(args)
+    except ingest.IngestError as exc:
+        print(f"\ninput error: {exc}", file=sys.stderr)
+        return 1
+    except engine.EngineError as exc:
+        print(f"\nprovider error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

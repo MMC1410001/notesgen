@@ -1,96 +1,58 @@
-"""Drive the `claude` CLI in headless mode.
+"""Backwards-compatible facade over the provider registry.
 
-Uses the existing Claude Code subscription rather than an API key, so there is
-no per-token bill. Deliberately does NOT pass --bare: that flag forces
-ANTHROPIC_API_KEY auth and would bypass the subscription entirely.
+The real backends live in `notesgen.providers`. This keeps `engine.call(...)`
+working for existing callers and holds the process-wide provider/model choice
+the CLI sets once at startup.
 """
 
 from __future__ import annotations
 
-import json
-import random
-import shutil
-import subprocess
-import time
-from dataclasses import dataclass
+from . import providers
+from .providers import EngineError, MissingCredential, Result  # noqa: F401
 
-from . import prompts
+# Set by the CLI; None means "resolve automatically".
+_provider: str | None = None
+_model: str | None = None
 
 
-class EngineError(RuntimeError):
-    pass
+def configure(provider: str | None = None, model: str | None = None) -> None:
+    global _provider, _model
+    _provider = provider
+    _model = model
 
 
-@dataclass
-class Result:
-    text: str
-    cost_usd: float = 0.0
-    duration_ms: int = 0
+def active() -> tuple[str, str]:
+    """The provider name and model that would be used, for display."""
+    module = providers.resolve(_provider)
+    return module.NAME, _model or module.DEFAULT_MODEL
 
 
 def ensure_available() -> str:
-    exe = shutil.which("claude")
-    if not exe:
-        raise EngineError("the `claude` CLI is not on PATH")
-    return exe
+    module = providers.resolve(_provider)
+    return module.NAME
 
 
-def call(
-    prompt: str,
-    *,
-    model: str = "sonnet",
-    timeout: int = 600,
-    attempts: int = 3,
-) -> Result:
-    exe = ensure_available()
-    cmd = [
-        exe,
-        "-p",
-        "--model", model,
-        "--output-format", "json",
-        "--no-session-persistence",
-        # Pure text transformation: no tools, and no chance of the model
-        # wandering off to read or write files mid-run.
-        "--allowedTools", "",
-        "--max-turns", "1",
-        "--append-system-prompt", prompts.SYSTEM,
-    ]
-
-    last: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            if proc.returncode != 0:
-                raise EngineError(
-                    f"claude exited {proc.returncode}: {proc.stderr.strip()[:400]}"
-                )
-            return _parse(proc.stdout)
-        except (EngineError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-            last = exc
-            if attempt == attempts:
-                break
-            # Usage limits and transient overload both benefit from backing
-            # off rather than hammering.
-            time.sleep(min(60, 5 * 2 ** (attempt - 1)) + random.uniform(0, 3))
-
-    raise EngineError(f"failed after {attempts} attempts: {last}")
-
-
-def _parse(stdout: str) -> Result:
-    payload = json.loads(stdout)
-    if payload.get("is_error"):
-        raise EngineError(f"claude reported an error: {str(payload)[:400]}")
-    text = payload.get("result") or ""
-    if not text.strip():
-        raise EngineError("claude returned an empty result")
-    return Result(
-        text=text.strip(),
-        cost_usd=float(payload.get("total_cost_usd") or 0.0),
-        duration_ms=int(payload.get("duration_ms") or 0),
+def call(prompt: str, *, model: str | None = None, timeout: int = 600, attempts: int = 3) -> Result:
+    return providers.call(
+        prompt,
+        provider=_provider,
+        # An explicit per-call model wins, then the CLI's, then the provider
+        # default. "sonnet" is a claude-cli alias, so it must not leak into an
+        # API provider that has never heard of it.
+        model=_resolve_model(model),
+        timeout=timeout,
+        attempts=attempts,
     )
+
+
+def _resolve_model(model: str | None) -> str | None:
+    module = providers.resolve(_provider)
+    chosen = model or _model
+    if chosen is None:
+        return None
+    # generate.py passes the CLI default of "sonnet" unconditionally; treat it
+    # as "use this provider's default" for providers that don't know the alias.
+    if chosen == "sonnet" and module is not providers.PROVIDERS["claude-cli"]:
+        aliases = getattr(module, "ALIASES", {})
+        return aliases.get("sonnet", module.DEFAULT_MODEL)
+    return chosen

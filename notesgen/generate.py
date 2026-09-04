@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import engine, prompts
+from .providers import MissingCredential, ProviderUnavailable
 from .discover import STATUS_NO_TRANSCRIPT, Lecture, Section
 from .glossary import Glossary
 from .manifest import Manifest
@@ -86,6 +87,11 @@ def generate_lectures(
             done += 1
             try:
                 _, result, n_fixed = fut.result()
+            except (MissingCredential, ProviderUnavailable):
+                # Configuration, not content: every remaining lecture would
+                # fail the same way, so stop now with the actionable message.
+                pool.shutdown(cancel_futures=True)
+                raise
             except Exception as exc:  # noqa: BLE001 - one bad lecture must not stop 182 good ones
                 stats["failed"] += 1
                 print(f"  [{done}/{len(jobs)}] FAILED {lec.label}: {exc}")
@@ -165,6 +171,9 @@ def generate_rollups(
             section, _, digest, key = futures[fut]
             try:
                 _, result = fut.result()
+            except (MissingCredential, ProviderUnavailable):
+                pool.shutdown(cancel_futures=True)
+                raise
             except Exception as exc:  # noqa: BLE001
                 stats["failed"] += 1
                 print(f"  FAILED rollup {section.idx}: {exc}")

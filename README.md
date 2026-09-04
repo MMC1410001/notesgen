@@ -4,8 +4,15 @@ Turns Udemy course transcripts into structured revision notes as `.docx`
 files you upload to Google Docs — so you can watch the course instead of
 pausing to write notes.
 
-This handles stages 2–4 of the pipeline. Stage 1 (pulling captions out of
-Udemy) happens elsewhere; this tool reads the transcript tree that produces.
+## Getting transcripts
+
+Easiest path — the **[Udemy Transcript Extractor](https://chromewebstore.google.com/detail/udemy-transcript-extracto/oimlbilmdnimabebeilpndlndfoepopd)**
+Chrome extension. Open a course you're enrolled in, click the extension, choose
+*Extract transcripts*; about two minutes later you get a `.zip`. Hand that zip
+straight to `--input`. It runs entirely in your browser and reaches Udemy's
+internal API through your own logged-in session.
+
+`notesgen` can also fetch a course itself — see [Fetching by URL](#fetching-by-url).
 
 ## Input layout
 
@@ -19,24 +26,85 @@ Udemy) happens elsewhere; this tool reads the transcript tree that produces.
 Each `.txt` starts with a `Course: / Chapter: / Lecture:` header followed by a
 dashed rule; everything after it is the transcript body.
 
+**`--input` accepts any of three things** and figures out which it got:
+
+| You have | Pass |
+|---|---|
+| The extension's `.zip` | `-i "MyCourse-transcripts.zip"` |
+| An extracted folder | `-i "path/to/MyCourse"` |
+| Its parent folder | `-i "path/to"` — it descends automatically |
+| Only the course URL | `-i "https://www.udemy.com/course/..."` |
+
 ## Usage
 
 ```bash
 # See the course tree and which lectures have broken captions. No model calls.
-python3 -m notesgen discover --course "<course path>"
+python3 -m notesgen discover -i "<zip | folder | url>"
+
+# Download transcripts only (unpack a zip, or fetch a URL) and stop
+python3 -m notesgen fetch -i "<zip | folder | url>"
 
 # Generate Markdown notes (per lecture + per section + a course index)
-python3 -m notesgen generate --course "<course path>"
+python3 -m notesgen generate -i "<zip | folder | url>"
 
 # Assemble .docx from the Markdown
-python3 -m notesgen build --course "<course path>"
+python3 -m notesgen build -i "<zip | folder | url>"
 
 # Write .html / .txt / .md for copy-pasting (no model calls)
-python3 -m notesgen export --course "<course path>"
+python3 -m notesgen export -i "<zip | folder | url>"
 
 # Everything: generate, then build .docx and export every format
-python3 -m notesgen run --course "<course path>"
+python3 -m notesgen run -i "<zip | folder | url>"
 ```
+
+(`--course` is still accepted as an alias for `--input`.)
+
+## Choosing a provider
+
+`generate` is the only command that calls a model. Pick the backend with
+`--provider`, or set `NOTESGEN_PROVIDER`. With nothing configured it uses the
+`claude` CLI when installed, then whichever API key it finds.
+
+| Provider | Auth | Default model | Notes |
+|---|---|---|---|
+| `claude-cli` | your Claude Code subscription | `sonnet` | **No API key, no per-token bill.** The default. |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` | `--model claude-opus-5` for the strongest |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o` | |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | cheapest per token |
+
+Keys come from the environment or a `.env` in the project root — copy
+`.env.example` to `.env`. An exported variable always beats the file. Selecting
+a provider whose key is missing stops the run immediately and names the
+variable to set, rather than failing 183 lectures one at a time.
+
+API providers need their SDK: `pip install anthropic` / `openai` /
+`google-genai`. Only the one you use.
+
+## Fetching by URL
+
+```bash
+pip install playwright && playwright install chromium
+python3 -m notesgen fetch -i "https://www.udemy.com/course/your-course/"
+```
+
+A real Chromium window opens on the course page. **You** sign in — including
+SSO and 2FA — and the fetch then runs inside that authenticated session,
+calling the same undocumented Udemy endpoints the extension uses:
+
+```
+/api-2.0/courses/{id}/subscriber-curriculum-items/
+/api-2.0/users/me/subscribed-courses/{id}/lectures/{id}/
+```
+
+The tool never sees, extracts, or stores your credentials; the session stays in
+the browser profile under `input/.browser-profile`, so you sign in once rather
+than once per run. Output is written as the same folder layout and `.zip` the
+extension produces.
+
+Two things worth knowing: those endpoints are internal and can change without
+notice, and Udemy's terms restrict scraping course content. The extension route
+is the lower-friction and lower-exposure option; this exists for when you'd
+rather not leave the terminal.
 
 ## Choosing an output format
 
@@ -143,7 +211,10 @@ is what protects them.
 
 ## Requirements
 
-- `claude` CLI on PATH, logged in (uses the Claude Code subscription — no API
-  key, no per-token bill). Note the code deliberately avoids `--bare`, which
-  would force `ANTHROPIC_API_KEY` auth instead.
 - Python 3.10+, `pyyaml`, `python-docx`.
+- **One** of: the `claude` CLI on PATH and logged in (uses the Claude Code
+  subscription — no API key, no per-token bill; the code deliberately avoids
+  `--bare`, which would force `ANTHROPIC_API_KEY` auth instead), or an API key
+  for Anthropic / OpenAI / Gemini plus that provider's SDK.
+- Optional, only for `--input <udemy url>`: `playwright` +
+  `playwright install chromium`. Zip and folder input never need it.
